@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.edge-check*/
+server.log
+server.err
+server-*.log
+server-*.err
+server/data/*.json
+server/data/*.sqlite
+server/data/*.sqlite-*
+screenshot-*.png
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
