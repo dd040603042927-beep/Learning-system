@@ -9,30 +9,58 @@ const addDaysIso = (baseIso, days) => {
 const uid = (prefix) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
+export function makeInitialState() {
+  return {
+    notes: [],
+    knowledgePoints: [],
+    plans: [],
+    reviewReminders: [],
+    reflections: [],
+    goals: [],
+    projects: [],
+  };
+}
+
 export function makeSeedState() {
   const today = todayIso();
   const goals = [
     {
       id: "goal_kaoyan_408",
       title: "2027 考研 408 基础能力",
+      type: "template",
+      templateKey: "kaoyan",
+      domain: "考研",
+      importance: 5,
       track: "kaoyan",
       category: "专业课 / 408",
       deadline: "2026-12-20",
+      weeklyHours: 25,
+      currentLevel: "数学一般，408 初学，英语需要持续复习。",
       progress: 28,
       status: "进行中",
       description: "系统推进数据结构、计组、操作系统、计算机网络，形成错题和复习闭环。",
       linkedKnowledge: ["数据结构", "操作系统", "计算机网络", "数据库"],
+      createdAt: today,
+      updatedAt: today,
     },
     {
       id: "goal_career_frontend",
       title: "前端就业项目能力",
+      type: "template",
+      templateKey: "career",
+      domain: "就业",
+      importance: 4,
       track: "career",
       category: "前端 / 项目 / 面试",
       deadline: "2026-10-01",
+      weeklyHours: 14,
+      currentLevel: "已掌握基础语法，需要通过项目提高工程化和表达能力。",
       progress: 36,
       status: "进行中",
       description: "完成组件化、状态管理、工程化、项目复盘和面试表达训练。",
       linkedKnowledge: ["React", "TypeScript", "组件通信", "项目复盘"],
+      createdAt: today,
+      updatedAt: today,
     },
   ];
 
@@ -93,6 +121,7 @@ export function makeSeedState() {
       {
         id: "review_react_day1",
         noteId: "note_react_hooks",
+        goalId: "goal_career_frontend",
         conceptName: "useState",
         dueAt: today,
         intervalDays: 1,
@@ -104,6 +133,7 @@ export function makeSeedState() {
       {
         id: uid("reflection"),
         weekStart: today,
+        goalFocusIds: ["goal_kaoyan_408", "goal_career_frontend"],
         generatedSummary: "已建立第一批学习数据，请补充本周反思和下周重点。",
         wins: "",
         blockers: "",

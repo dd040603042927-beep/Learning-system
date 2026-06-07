@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
-import { makeSeedState } from "./seed.mjs";
+import { makeInitialState } from "./seed.mjs";
 import { openDb, publicUser, replaceUserState, selectUserState } from "./db.mjs";
 import { runRealAi } from "./ai.mjs";
 
@@ -121,7 +121,7 @@ const handleApi = async (request, response, url) => {
       createdAt: new Date().toISOString(),
     };
     db.users.push(user);
-    replaceUserState(db, user.id, makeSeedState());
+    replaceUserState(db, user.id, makeInitialState());
     const token = createSession(db, user.id);
     dbStore.write(db);
     json(response, 201, { token, user: publicUser(user), state: selectUserState(db, user.id) });

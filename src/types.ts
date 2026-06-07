@@ -7,6 +7,9 @@ export type PlanStatus = "未开始" | "进行中" | "完成";
 export type ReviewStatus = "待复习" | "已完成" | "跳过";
 export type ReviewMode = "复习" | "自测" | "费曼讲解";
 export type SourceType = "手动" | "笔记行动" | "复习系统" | "AI建议" | "周总结";
+export type GoalType = "template" | "custom";
+export type GoalImportance = 1 | 2 | 3 | 4 | 5;
+export type GoalStatus = "进行中" | "已完成" | "暂停" | "放弃";
 
 export interface ReviewRecord {
   id: string;
@@ -67,6 +70,7 @@ export interface StudyPlan {
 export interface ReviewReminder {
   id: string;
   noteId: string;
+  goalId?: string;
   conceptName?: string;
   dueAt: string;
   intervalDays: number;
@@ -78,6 +82,7 @@ export interface ReviewReminder {
 export interface Reflection {
   id: string;
   weekStart: string;
+  goalFocusIds?: string[];
   generatedSummary: string;
   wins: string;
   blockers: string;
@@ -89,13 +94,22 @@ export interface Reflection {
 export interface Goal {
   id: string;
   title: string;
+  type: GoalType;
+  templateKey?: string;
+  domain: string;
+  importance: GoalImportance;
   track: Track;
   category: string;
-  deadline: string;
+  deadline?: string;
+  weeklyHours?: number;
+  currentLevel?: string;
   progress: number;
-  status: "进行中" | "已完成" | "暂停";
+  priorityScore?: number;
+  status: GoalStatus;
   description: string;
   linkedKnowledge: string[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface PortfolioProject {

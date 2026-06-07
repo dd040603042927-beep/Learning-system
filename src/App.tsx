@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import type {
   Goal,
+  GoalImportance,
   Importance,
   Note,
   NoteType,
@@ -36,13 +37,19 @@ import type {
 import { aiActionLabels, runLocalAi, type AiAction } from "./lib/ai";
 import {
   addDaysIso,
+  buildGoalInsights,
   buildReviewSchedule,
   buildWeeklySummary,
   cleanUnique,
   completionRate,
   dueReminders,
+  getGoalTemplate,
   getWeekStartIso,
+  goalImportanceLabels,
+  goalStatuses,
+  goalTemplates,
   nextIntervalByScore,
+  normalizeState,
   planFromNoteAction,
   splitList,
   todayIso,
@@ -75,14 +82,27 @@ type TabKey =
   | "projects"
   | "ai";
 
+interface GoalDraft {
+  title: string;
+  templateKey: string;
+  domain: string;
+  track: Track;
+  category: string;
+  deadline: string;
+  importance: GoalImportance;
+  weeklyHours: number;
+  currentLevel: string;
+  description: string;
+}
+
 const tabs: Array<{ key: TabKey; label: string; icon: typeof Gauge }> = [
   { key: "dashboard", label: "总览", icon: Gauge },
+  { key: "goals", label: "我的目标", icon: Target },
   { key: "notes", label: "笔记库", icon: NotebookPen },
-  { key: "knowledge", label: "知识点", icon: Tags },
   { key: "plans", label: "学习计划", icon: CalendarCheck },
   { key: "reviews", label: "复习系统", icon: RotateCcw },
   { key: "reflections", label: "总结反思", icon: FileText },
-  { key: "goals", label: "目标管理", icon: Target },
+  { key: "knowledge", label: "知识点", icon: Tags },
   { key: "projects", label: "项目作品集", icon: BriefcaseBusiness },
   { key: "ai", label: "AI 助手", icon: Bot },
 ];
@@ -96,14 +116,17 @@ const planStatuses: PlanStatus[] = ["未开始", "进行中", "完成"];
 
 function createBlankNote(goals: Goal[]): Note {
   const today = todayIso();
-  const careerGoal = goals.find((goal) => goal.track === "career");
+  const primaryGoal =
+    goals
+      .filter((goal) => goal.status === "进行中")
+      .sort((a, b) => b.importance - a.importance)[0] ?? goals[0];
   return {
     id: uid("note"),
     title: "新笔记",
     type: "技术",
-    direction: "前端开发",
-    tracks: ["career"],
-    associatedGoalIds: careerGoal ? [careerGoal.id] : [],
+    direction: primaryGoal?.domain || "自定义学习",
+    tracks: primaryGoal ? [primaryGoal.track] : ["shared"],
+    associatedGoalIds: primaryGoal ? [primaryGoal.id] : [],
     mastery: "初学",
     importance: "中",
     summary: "",
@@ -141,13 +164,19 @@ function App() {
     scope: "今日" as PlanScope,
     category: "技术",
     track: "career" as Track,
+    goalId: "",
     dueDate: todayIso(),
   });
-  const [goalDraft, setGoalDraft] = useState({
+  const [goalDraft, setGoalDraft] = useState<GoalDraft>({
     title: "",
-    track: "kaoyan" as Track,
+    templateKey: "custom",
+    domain: "",
+    track: "shared" as Track,
     category: "",
     deadline: addDaysIso(todayIso(), 30),
+    importance: 3 as GoalImportance,
+    weeklyHours: 5,
+    currentLevel: "",
     description: "",
   });
   const [projectDraft, setProjectDraft] = useState({
@@ -169,11 +198,12 @@ function App() {
   const [editingProjectId, setEditingProjectId] = useState("");
 
   function applyAuthPayload(payload: AuthPayload) {
+    const nextState = normalizeState(payload.state);
     setCurrentUser(payload.user);
-    setState(payload.state);
-    setSelectedNoteId(payload.state.notes[0]?.id ?? "");
+    setState(nextState);
+    setSelectedNoteId(nextState.notes[0]?.id ?? "");
     setRemoteReady(true);
-    lastSyncedState.current = JSON.stringify(payload.state);
+    lastSyncedState.current = JSON.stringify(nextState);
   }
 
   useEffect(() => {
@@ -182,11 +212,12 @@ function App() {
       .then((payload) => {
         if (cancelled) return;
         if (payload) {
+          const nextState = normalizeState(payload.state);
           setCurrentUser(payload.user);
-          setState(payload.state);
-          setSelectedNoteId(payload.state.notes[0]?.id ?? "");
+          setState(nextState);
+          setSelectedNoteId(nextState.notes[0]?.id ?? "");
           setRemoteReady(true);
-          lastSyncedState.current = JSON.stringify(payload.state);
+          lastSyncedState.current = JSON.stringify(nextState);
         }
       })
       .finally(() => {
@@ -237,12 +268,21 @@ function App() {
     [state.reviewReminders],
   );
   const planRate = completionRate(state.plans);
-  const sharedKnowledge = state.knowledgePoints.filter((point) =>
-    point.tracks.includes("shared"),
-  );
+  const goalInsights = useMemo(() => buildGoalInsights(state), [state]);
+  const topGoalInsight = goalInsights[0];
 
   function showNotice(message: string) {
     setNotice(message);
+  }
+
+  function getReminderGoalTitle(reminder: ReviewReminder) {
+    if (reminder.goalId) {
+      const directGoal = state.goals.find((goal) => goal.id === reminder.goalId);
+      if (directGoal) return directGoal.title;
+    }
+    const note = state.notes.find((item) => item.id === reminder.noteId);
+    const fallbackGoal = state.goals.find((goal) => note?.associatedGoalIds.includes(goal.id));
+    return fallbackGoal?.title;
   }
 
   async function submitAuth() {
@@ -274,11 +314,17 @@ function App() {
 
   function saveDraftNote() {
     const now = todayIso();
+    const associatedGoals = state.goals.filter((goal) =>
+      draftNote.associatedGoalIds.includes(goal.id),
+    );
+    const linkedTracks = associatedGoals.map((goal) => goal.track);
     const normalized: Note = {
       ...draftNote,
       title: draftNote.title.trim() || "未命名笔记",
       direction: draftNote.direction.trim(),
-      tracks: draftNote.tracks.length ? draftNote.tracks : ["career"],
+      tracks: (cleanUnique([...draftNote.tracks, ...linkedTracks]) as Track[]).length
+        ? (cleanUnique([...draftNote.tracks, ...linkedTracks]) as Track[])
+        : ["shared"],
       associatedGoalIds: draftNote.associatedGoalIds,
       coreConcepts: cleanUnique(draftNote.coreConcepts),
       commonQuestions: cleanUnique(draftNote.commonQuestions),
@@ -370,15 +416,17 @@ function App() {
       showNotice("请填写计划标题。");
       return;
     }
+    const selectedGoal = state.goals.find((goal) => goal.id === planDraft.goalId);
     const plan: StudyPlan = {
       id: uid("plan"),
       title: planDraft.title.trim(),
       scope: planDraft.scope,
-      category: planDraft.category.trim() || "学习",
-      track: planDraft.track,
+      category: planDraft.category.trim() || selectedGoal?.category || "学习",
+      track: selectedGoal?.track ?? planDraft.track,
       dueDate: planDraft.dueDate,
       status: "未开始",
       source: "手动",
+      goalId: selectedGoal?.id,
       createdAt: todayIso(),
     };
     setState((current) => ({ ...current, plans: [plan, ...current.plans] }));
@@ -404,6 +452,7 @@ function App() {
       const nextReminder: ReviewReminder = {
         id: uid("review"),
         noteId: reminder.noteId,
+        goalId: reminder.goalId ?? note?.associatedGoalIds[0],
         conceptName: reminder.conceptName,
         dueAt: nextReviewAt,
         intervalDays: nextInterval,
@@ -458,6 +507,7 @@ function App() {
         {
           id: uid("reflection"),
           weekStart,
+          goalFocusIds: goalInsights.slice(0, 3).map((insight) => insight.goal.id),
           generatedSummary: summary,
           wins: "",
           blockers: "",
@@ -482,23 +532,39 @@ function App() {
   }
 
   function addGoal() {
-    if (!goalDraft.title.trim()) {
+    const template = getGoalTemplate(goalDraft.templateKey);
+    const title = goalDraft.title.trim() || template.defaultTitle;
+    if (!title) {
       showNotice("请填写目标标题。");
       return;
     }
+    const now = todayIso();
     const goal: Goal = {
       id: uid("goal"),
-      title: goalDraft.title.trim(),
+      title,
+      type: goalDraft.templateKey === "custom" ? "custom" : "template",
+      templateKey: goalDraft.templateKey,
+      domain: goalDraft.domain.trim() || template.domain,
+      importance: goalDraft.importance,
       track: goalDraft.track,
-      category: goalDraft.category.trim() || trackLabels[goalDraft.track],
+      category: goalDraft.category.trim() || template.defaultCategory || trackLabels[goalDraft.track],
       deadline: goalDraft.deadline,
+      weeklyHours: goalDraft.weeklyHours,
+      currentLevel: goalDraft.currentLevel.trim(),
       progress: 0,
       status: "进行中",
       description: goalDraft.description.trim(),
-      linkedKnowledge: [],
+      linkedKnowledge: template.suggestions,
+      createdAt: now,
+      updatedAt: now,
     };
     setState((current) => ({ ...current, goals: [goal, ...current.goals] }));
-    setGoalDraft({ ...goalDraft, title: "", category: "", description: "" });
+    setGoalDraft({
+      ...goalDraft,
+      title: "",
+      currentLevel: "",
+      description: "",
+    });
     showNotice("已添加目标。");
   }
 
@@ -506,7 +572,14 @@ function App() {
     setState((current) => ({
       ...current,
       goals: current.goals.map((goal) =>
-        goal.id === goalId ? { ...goal, progress, status: progress >= 100 ? "已完成" : goal.status } : goal,
+        goal.id === goalId
+          ? {
+              ...goal,
+              progress,
+              status: progress >= 100 ? "已完成" : goal.status,
+              updatedAt: todayIso(),
+            }
+          : goal,
       ),
     }));
   }
@@ -514,7 +587,9 @@ function App() {
   function updateGoal(goalId: string, patch: Partial<Goal>) {
     setState((current) => ({
       ...current,
-      goals: current.goals.map((goal) => (goal.id === goalId ? { ...goal, ...patch } : goal)),
+      goals: current.goals.map((goal) =>
+        goal.id === goalId ? { ...goal, ...patch, updatedAt: todayIso() } : goal,
+      ),
     }));
   }
 
@@ -533,8 +608,27 @@ function App() {
       plans: current.plans.map((plan) =>
         plan.goalId === goalId ? { ...plan, goalId: undefined } : plan,
       ),
+      reviewReminders: current.reviewReminders.map((reminder) =>
+        reminder.goalId === goalId ? { ...reminder, goalId: undefined } : reminder,
+      ),
     }));
     setEditingGoalId("");
+  }
+
+  function applyGoalTemplate(templateKey: string) {
+    const template = getGoalTemplate(templateKey);
+    setGoalDraft({
+      title: template.defaultTitle,
+      templateKey,
+      domain: template.domain,
+      track: template.track,
+      category: template.defaultCategory,
+      deadline: goalDraft.deadline,
+      importance: template.defaultImportance,
+      weeklyHours: template.defaultWeeklyHours,
+      currentLevel: "",
+      description: "",
+    });
   }
 
   function addProject() {
@@ -606,11 +700,12 @@ function App() {
       id: uid("plan"),
       title: firstLine,
       scope: "下周",
-      category: "AI 建议",
-      track: "shared",
+      category: topGoalInsight?.goal.category || "AI 建议",
+      track: topGoalInsight?.goal.track || "shared",
       dueDate: addDaysIso(todayIso(), 7),
       status: "未开始",
       source: "AI建议",
+      goalId: topGoalInsight?.goal.id,
       createdAt: todayIso(),
     };
     setState((current) => ({ ...current, plans: [plan, ...current.plans] }));
@@ -621,7 +716,7 @@ function App() {
     if (!file) return;
     file.text().then((text) => {
       try {
-        setState(JSON.parse(text));
+        setState(normalizeState(JSON.parse(text)));
         showNotice("已导入备份数据。");
       } catch {
         showNotice("导入失败：JSON 格式不正确。");
@@ -633,17 +728,22 @@ function App() {
     return (
       <div className="stack">
         <section className="dashboard-grid">
-          <MetricCard label="笔记" value={state.notes.length} hint="结构化学习记录" />
+          <MetricCard label="目标" value={state.goals.length} hint="用户自定义学习方向" />
           <MetricCard label="到期复习" value={due.length} hint="今天需要处理" tone="warning" />
           <MetricCard label="计划完成率" value={`${planRate}%`} hint="当前计划池" tone="success" />
-          <MetricCard label="交叉知识点" value={sharedKnowledge.length} hint="考研 + 就业复用" tone="info" />
+          <MetricCard
+            label="当前优先"
+            value={topGoalInsight ? topGoalInsight.priorityScore : "-"}
+            hint={topGoalInsight?.goal.title || "先创建一个核心目标"}
+            tone="info"
+          />
         </section>
 
         <section className="panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">闭环工作流</p>
-              <h2>从笔记到下周计划</h2>
+              <p className="eyebrow">目标驱动闭环</p>
+              <h2>从目标到笔记、复习、计划和复盘</h2>
             </div>
             <button className="primary-button" onClick={createNewNote}>
               <Plus size={18} />
@@ -651,7 +751,7 @@ function App() {
             </button>
           </div>
           <div className="flow-row">
-            {["写结构化笔记", "提取知识点", "生成复习", "自测记录", "周总结反思", "进入下周计划"].map(
+            {["定义目标", "关联笔记", "提取知识点", "生成复习", "计划推进", "目标复盘"].map(
               (step, index) => (
                 <div className="flow-step" key={step}>
                   <span>{index + 1}</span>
@@ -663,6 +763,33 @@ function App() {
         </section>
 
         <section className="two-column">
+          <div className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">目标优先级</p>
+                <h2>当前最该关注</h2>
+              </div>
+              <button className="ghost-button" onClick={() => setActiveTab("goals")}>
+                查看全部
+              </button>
+            </div>
+            <div className="goal-priority-list">
+              {goalInsights.slice(0, 4).map((insight) => (
+                <div className="goal-priority-row" key={insight.goal.id}>
+                  <div>
+                    <strong>{insight.goal.title}</strong>
+                    <span>
+                      {insight.goal.domain} · {goalImportanceLabels[insight.goal.importance]} ·{" "}
+                      {insight.reasons.join("、") || "持续推进"}
+                    </span>
+                  </div>
+                  <b>{insight.priorityScore}</b>
+                </div>
+              ))}
+              {goalInsights.length === 0 && <EmptyState text="还没有目标，先创建一个核心学习目标。" />}
+            </div>
+          </div>
+
           <div className="panel">
             <div className="section-heading">
               <div>
@@ -679,36 +806,11 @@ function App() {
                   key={reminder.id}
                   reminder={reminder}
                   note={state.notes.find((note) => note.id === reminder.noteId)}
+                  goalTitle={getReminderGoalTitle(reminder)}
                   onComplete={completeReview}
                 />
               ))}
               {due.length === 0 && <EmptyState text="今天没有到期复习，可以做一次主动输出。" />}
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">双路线</p>
-                <h2>目标进度</h2>
-              </div>
-              <button className="ghost-button" onClick={createReflection}>
-                生成周总结
-              </button>
-            </div>
-            <div className="goal-bars">
-              {state.goals.map((goal) => (
-                <div className="goal-bar" key={goal.id}>
-                  <div>
-                    <strong>{goal.title}</strong>
-                    <span>{trackShortLabels[goal.track]} · {goal.category}</span>
-                  </div>
-                  <div className="progress">
-                    <i style={{ width: `${goal.progress}%` }} />
-                  </div>
-                  <b>{goal.progress}%</b>
-                </div>
-              ))}
             </div>
           </div>
         </section>
@@ -716,17 +818,30 @@ function App() {
         <section className="panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">路线交叉</p>
-              <h2>优先复习的高收益知识点</h2>
+              <p className="eyebrow">目标进度分析</p>
+              <h2>按目标查看学习投入</h2>
             </div>
+            <button className="ghost-button" onClick={createReflection}>
+              生成周总结
+            </button>
           </div>
-          <div className="knowledge-strip">
-            {sharedKnowledge.slice(0, 8).map((point) => (
-              <div className="knowledge-pill" key={point.id}>
-                <strong>{point.name}</strong>
-                <span>{point.reason}</span>
+          <div className="goal-bars">
+            {goalInsights.map((insight) => (
+              <div className="goal-bar" key={insight.goal.id}>
+                <div>
+                  <strong>{insight.goal.title}</strong>
+                  <span>
+                    {insight.goal.domain} · 笔记 {insight.noteCount} · 到期复习{" "}
+                    {insight.dueReviewCount} · {insight.risk}
+                  </span>
+                </div>
+                <div className="progress">
+                  <i style={{ width: `${insight.goal.progress}%` }} />
+                </div>
+                <b>{insight.goal.progress}%</b>
               </div>
             ))}
+            {goalInsights.length === 0 && <EmptyState text="暂无目标分析。" />}
           </div>
         </section>
       </div>
@@ -836,7 +951,7 @@ function App() {
           </div>
 
           <div className="choice-block">
-            <span>路线</span>
+            <span>标签</span>
             <div className="chips">
               {tracks.map((track) => (
                 <button
@@ -1021,14 +1136,21 @@ function App() {
               ))}
             </select>
             <select
-              value={planDraft.track}
-              onChange={(event) =>
-                setPlanDraft({ ...planDraft, track: event.target.value as Track })
-              }
+              value={planDraft.goalId}
+              onChange={(event) => {
+                const goal = state.goals.find((item) => item.id === event.target.value);
+                setPlanDraft({
+                  ...planDraft,
+                  goalId: event.target.value,
+                  track: goal?.track ?? planDraft.track,
+                  category: goal?.category ?? planDraft.category,
+                });
+              }}
             >
-              {tracks.map((track) => (
-                <option key={track} value={track}>
-                  {trackLabels[track]}
+              <option value="">不绑定目标</option>
+              {goalInsights.map((insight) => (
+                <option key={insight.goal.id} value={insight.goal.id}>
+                  {insight.goal.title}
                 </option>
               ))}
             </select>
@@ -1051,88 +1173,100 @@ function App() {
               <div className="card-list">
                 {state.plans
                   .filter((plan) => plan.scope === scope)
-                  .map((plan) => (
-                    <div className="task-card" key={plan.id}>
-                      {editingPlanId === plan.id ? (
-                        <div className="inline-editor">
-                          <input
-                            value={plan.title}
-                            onChange={(event) => updatePlan(plan.id, { title: event.target.value })}
-                          />
-                          <input
-                            value={plan.category}
-                            onChange={(event) =>
-                              updatePlan(plan.id, { category: event.target.value })
-                            }
-                          />
-                          <div className="compact-edit-row">
-                            <select
-                              value={plan.scope}
-                              onChange={(event) =>
-                                updatePlan(plan.id, { scope: event.target.value as PlanScope })
-                              }
-                            >
-                              {planScopes.map((item) => (
-                                <option key={item}>{item}</option>
-                              ))}
-                            </select>
-                            <select
-                              value={plan.track}
-                              onChange={(event) =>
-                                updatePlan(plan.id, { track: event.target.value as Track })
-                              }
-                            >
-                              {tracks.map((track) => (
-                                <option key={track} value={track}>
-                                  {trackShortLabels[track]}
-                                </option>
-                              ))}
-                            </select>
+                  .map((plan) => {
+                    const linkedGoal = state.goals.find((goal) => goal.id === plan.goalId);
+                    return (
+                      <div className="task-card" key={plan.id}>
+                        {editingPlanId === plan.id ? (
+                          <div className="inline-editor">
                             <input
-                              type="date"
-                              value={plan.dueDate}
+                              value={plan.title}
+                              onChange={(event) => updatePlan(plan.id, { title: event.target.value })}
+                            />
+                            <input
+                              value={plan.category}
                               onChange={(event) =>
-                                updatePlan(plan.id, { dueDate: event.target.value })
+                                updatePlan(plan.id, { category: event.target.value })
                               }
                             />
+                            <div className="compact-edit-row">
+                              <select
+                                value={plan.scope}
+                                onChange={(event) =>
+                                  updatePlan(plan.id, { scope: event.target.value as PlanScope })
+                                }
+                              >
+                                {planScopes.map((item) => (
+                                  <option key={item}>{item}</option>
+                                ))}
+                              </select>
+                              <select
+                                value={plan.goalId ?? ""}
+                                onChange={(event) => {
+                                  const goal = state.goals.find((item) => item.id === event.target.value);
+                                  updatePlan(plan.id, {
+                                    goalId: goal?.id,
+                                    track: goal?.track ?? plan.track,
+                                    category: goal?.category ?? plan.category,
+                                  });
+                                }}
+                              >
+                                <option value="">不绑定目标</option>
+                                {goalInsights.map((insight) => (
+                                  <option key={insight.goal.id} value={insight.goal.id}>
+                                    {insight.goal.title}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="date"
+                                value={plan.dueDate}
+                                onChange={(event) =>
+                                  updatePlan(plan.id, { dueDate: event.target.value })
+                                }
+                              />
+                            </div>
                           </div>
+                        ) : (
+                          <div>
+                            <strong>{plan.title}</strong>
+                            <span>
+                              {linkedGoal
+                                ? `${linkedGoal.title} · ${linkedGoal.domain}`
+                                : `${trackShortLabels[plan.track]} · ${plan.category}`}{" "}
+                              · {plan.source}
+                            </span>
+                          </div>
+                        )}
+                        <small>截止 {plan.dueDate}</small>
+                        <div className="card-actions">
+                          <select
+                            value={plan.status}
+                            onChange={(event) =>
+                              updatePlanStatus(plan.id, event.target.value as PlanStatus)
+                            }
+                          >
+                            {planStatuses.map((status) => (
+                              <option key={status}>{status}</option>
+                            ))}
+                          </select>
+                          <button
+                            className="ghost-button"
+                            onClick={() =>
+                              setEditingPlanId(editingPlanId === plan.id ? "" : plan.id)
+                            }
+                          >
+                            <Pencil size={15} />
+                            {editingPlanId === plan.id ? "完成" : "编辑"}
+                          </button>
+                          <button className="ghost-button danger" onClick={() => deletePlan(plan.id)}>
+                            <Trash2 size={15} />
+                            删除
+                          </button>
                         </div>
-                      ) : (
-                        <div>
-                          <strong>{plan.title}</strong>
-                          <span>
-                            {trackShortLabels[plan.track]} · {plan.category} · {plan.source}
-                          </span>
-                        </div>
-                      )}
-                      <small>截止 {plan.dueDate}</small>
-                      <div className="card-actions">
-                        <select
-                          value={plan.status}
-                          onChange={(event) =>
-                            updatePlanStatus(plan.id, event.target.value as PlanStatus)
-                          }
-                        >
-                          {planStatuses.map((status) => (
-                            <option key={status}>{status}</option>
-                          ))}
-                        </select>
-                        <button
-                          className="ghost-button"
-                          onClick={() =>
-                            setEditingPlanId(editingPlanId === plan.id ? "" : plan.id)
-                          }
-                        >
-                          <Pencil size={15} />
-                          {editingPlanId === plan.id ? "完成" : "编辑"}
-                        </button>
-                        <button className="ghost-button danger" onClick={() => deletePlan(plan.id)}>
-                          <Trash2 size={15} />
-                          删除
-                        </button>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 {state.plans.filter((plan) => plan.scope === scope).length === 0 && (
                   <EmptyState text="暂无计划" />
                 )}
@@ -1160,6 +1294,7 @@ function App() {
                 key={reminder.id}
                 reminder={reminder}
                 note={state.notes.find((note) => note.id === reminder.noteId)}
+                goalTitle={getReminderGoalTitle(reminder)}
                 onComplete={completeReview}
               />
             ))}
@@ -1181,7 +1316,10 @@ function App() {
                 <div className="timeline-item" key={reminder.id}>
                   <span>{reminder.dueAt}</span>
                   <strong>{note?.title ?? "已删除笔记"}</strong>
-                  <small>第 {reminder.intervalDays} 天 · {reminder.conceptName || "整篇笔记"}</small>
+                  <small>
+                    第 {reminder.intervalDays} 天 · {reminder.conceptName || "整篇笔记"} ·{" "}
+                    {getReminderGoalTitle(reminder) || "未关联目标"}
+                  </small>
                 </div>
               );
             })}
@@ -1212,6 +1350,13 @@ function App() {
               <div>
                 <p className="eyebrow">周起始 {reflection.weekStart}</p>
                 <h2>学习复盘</h2>
+                <span className="muted-line">
+                  目标焦点：
+                  {state.goals
+                    .filter((goal) => reflection.goalFocusIds?.includes(goal.id))
+                    .map((goal) => goal.title)
+                    .join("、") || "未指定"}
+                </span>
               </div>
             </div>
             <pre>{reflection.generatedSummary}</pre>
@@ -1258,62 +1403,152 @@ function App() {
   }
 
   function renderGoals() {
+    const selectedTemplate = getGoalTemplate(goalDraft.templateKey);
+
     return (
       <div className="stack">
         <section className="panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">目标管理</p>
-              <h2>考研路线 + 就业路线</h2>
+              <p className="eyebrow">目标初始化</p>
+              <h2>选择模板，或创建自定义学习目标</h2>
             </div>
           </div>
-          <div className="inline-form">
-            <input
-              placeholder="目标标题"
-              value={goalDraft.title}
-              onChange={(event) => setGoalDraft({ ...goalDraft, title: event.target.value })}
-            />
-            <select
-              value={goalDraft.track}
-              onChange={(event) =>
-                setGoalDraft({ ...goalDraft, track: event.target.value as Track })
-              }
-            >
-              {tracks.map((track) => (
-                <option key={track} value={track}>
-                  {trackLabels[track]}
-                </option>
+          <div className="goal-template-grid">
+            {goalTemplates.map((template) => (
+              <button
+                className={`goal-template-card ${goalDraft.templateKey === template.key ? "active" : ""}`}
+                key={template.key}
+                onClick={() => applyGoalTemplate(template.key)}
+              >
+                <strong>{template.label}</strong>
+                <span>{template.domain}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="form-grid goal-form-grid">
+            <label>
+              目标名称
+              <input
+                placeholder="例如：2027 考研计算机"
+                value={goalDraft.title}
+                onChange={(event) => setGoalDraft({ ...goalDraft, title: event.target.value })}
+              />
+            </label>
+            <label>
+              目标方向
+              <input
+                placeholder="考研、就业、英语六级、毕业设计..."
+                value={goalDraft.domain}
+                onChange={(event) => setGoalDraft({ ...goalDraft, domain: event.target.value })}
+              />
+            </label>
+            <label>
+              分类结构
+              <input
+                placeholder="数学 / 英语 / 专业课"
+                value={goalDraft.category}
+                onChange={(event) => setGoalDraft({ ...goalDraft, category: event.target.value })}
+              />
+            </label>
+            <label>
+              截止时间
+              <input
+                type="date"
+                value={goalDraft.deadline}
+                onChange={(event) => setGoalDraft({ ...goalDraft, deadline: event.target.value })}
+              />
+            </label>
+            <label>
+              重要程度
+              <select
+                value={goalDraft.importance}
+                onChange={(event) =>
+                  setGoalDraft({
+                    ...goalDraft,
+                    importance: Number(event.target.value) as GoalImportance,
+                  })
+                }
+              >
+                {([1, 2, 3, 4, 5] as GoalImportance[]).map((importance) => (
+                  <option key={importance} value={importance}>
+                    {importance} · {goalImportanceLabels[importance]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              每周投入小时
+              <input
+                type="number"
+                min="0"
+                value={goalDraft.weeklyHours}
+                onChange={(event) =>
+                  setGoalDraft({ ...goalDraft, weeklyHours: Number(event.target.value) })
+                }
+              />
+            </label>
+            <label className="wide-field">
+              当前基础
+              <textarea
+                placeholder={selectedTemplate.descriptionHint}
+                value={goalDraft.currentLevel}
+                onChange={(event) =>
+                  setGoalDraft({ ...goalDraft, currentLevel: event.target.value })
+                }
+              />
+            </label>
+            <label className="wide-field">
+              目标说明
+              <textarea
+                placeholder="写清楚完成标准、阶段产出或需要覆盖的能力范围"
+                value={goalDraft.description}
+                onChange={(event) =>
+                  setGoalDraft({ ...goalDraft, description: event.target.value })
+                }
+              />
+            </label>
+          </div>
+
+          <div className="goal-suggestion-row">
+            <span>建议初始分类</span>
+            <div className="chips compact-chips">
+              {(selectedTemplate.suggestions.length
+                ? selectedTemplate.suggestions
+                : ["笔记", "计划", "复习", "复盘"]
+              ).map((item) => (
+                <span className="chip static" key={item}>
+                  {item}
+                </span>
               ))}
-            </select>
-            <input
-              placeholder="类别"
-              value={goalDraft.category}
-              onChange={(event) => setGoalDraft({ ...goalDraft, category: event.target.value })}
-            />
-            <input
-              type="date"
-              value={goalDraft.deadline}
-              onChange={(event) => setGoalDraft({ ...goalDraft, deadline: event.target.value })}
-            />
+            </div>
             <button className="primary-button" onClick={addGoal}>
               <Plus size={18} />
-              添加
+              添加目标
             </button>
-          </div>
-          <div className="single-extra-field">
-            <input
-              placeholder="目标说明：例如要覆盖哪些科目、技能或项目成果"
-              value={goalDraft.description}
-              onChange={(event) => setGoalDraft({ ...goalDraft, description: event.target.value })}
-            />
           </div>
         </section>
 
         <section className="goal-grid">
-          {state.goals.map((goal) => (
+          {goalInsights.map((insight) => {
+            const goal = insight.goal;
+            const daysText =
+              insight.daysLeft === null
+                ? "无截止"
+                : insight.daysLeft < 0
+                  ? `已超 ${Math.abs(insight.daysLeft)} 天`
+                  : `剩 ${insight.daysLeft} 天`;
+            return (
             <div className="panel goal-card" key={goal.id}>
               <div className="card-title-row">
-                <Badge tone={goal.track === "shared" ? "info" : "neutral"}>{trackLabels[goal.track]}</Badge>
+                <div className="goal-badges">
+                  <Badge tone={goal.importance >= 5 ? "danger" : goal.importance >= 4 ? "warning" : "neutral"}>
+                    {goalImportanceLabels[goal.importance]}
+                  </Badge>
+                  <Badge tone={goal.track === "shared" ? "info" : "neutral"}>{goal.domain}</Badge>
+                  <Badge tone={goal.status === "进行中" ? "success" : "neutral"}>{goal.status}</Badge>
+                </div>
                 <div className="card-actions">
                   <button
                     className="ghost-button"
@@ -1335,18 +1570,10 @@ function App() {
                     onChange={(event) => updateGoal(goal.id, { title: event.target.value })}
                   />
                   <div className="compact-edit-row">
-                    <select
-                      value={goal.track}
-                      onChange={(event) =>
-                        updateGoal(goal.id, { track: event.target.value as Track })
-                      }
-                    >
-                      {tracks.map((track) => (
-                        <option key={track} value={track}>
-                          {trackLabels[track]}
-                        </option>
-                      ))}
-                    </select>
+                    <input
+                      value={goal.domain}
+                      onChange={(event) => updateGoal(goal.id, { domain: event.target.value })}
+                    />
                     <input
                       value={goal.category}
                       onChange={(event) => updateGoal(goal.id, { category: event.target.value })}
@@ -1357,6 +1584,45 @@ function App() {
                       onChange={(event) => updateGoal(goal.id, { deadline: event.target.value })}
                     />
                   </div>
+                  <div className="compact-edit-row">
+                    <select
+                      value={goal.importance}
+                      onChange={(event) =>
+                        updateGoal(goal.id, {
+                          importance: Number(event.target.value) as GoalImportance,
+                        })
+                      }
+                    >
+                      {([1, 2, 3, 4, 5] as GoalImportance[]).map((importance) => (
+                        <option key={importance} value={importance}>
+                          {importance} · {goalImportanceLabels[importance]}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={goal.status}
+                      onChange={(event) =>
+                        updateGoal(goal.id, { status: event.target.value as Goal["status"] })
+                      }
+                    >
+                      {goalStatuses.map((status) => (
+                        <option key={status}>{status}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min="0"
+                      value={goal.weeklyHours ?? 0}
+                      onChange={(event) =>
+                        updateGoal(goal.id, { weeklyHours: Number(event.target.value) })
+                      }
+                    />
+                  </div>
+                  <input
+                    value={goal.currentLevel ?? ""}
+                    onChange={(event) => updateGoal(goal.id, { currentLevel: event.target.value })}
+                    placeholder="当前基础"
+                  />
                   <textarea
                     value={goal.description}
                     onChange={(event) => updateGoal(goal.id, { description: event.target.value })}
@@ -1366,9 +1632,14 @@ function App() {
                 <>
                   <h2>{goal.title}</h2>
                   <p>{goal.description}</p>
-                  <span>{goal.category} · 截止 {goal.deadline}</span>
+                  <span>{goal.category} · {daysText} · 每周 {goal.weeklyHours ?? 0} 小时</span>
+                  {goal.currentLevel && <small className="muted-line">当前基础：{goal.currentLevel}</small>}
                 </>
               )}
+              <div className="goal-score-row">
+                <strong>优先级 {insight.priorityScore}</strong>
+                <span>{insight.reasons.join("、") || "按当前节奏推进"}</span>
+              </div>
               <div className="progress large">
                 <i style={{ width: `${goal.progress}%` }} />
               </div>
@@ -1382,6 +1653,13 @@ function App() {
                 />
                 <b>{goal.progress}%</b>
               </div>
+              <div className="mini-stat-grid">
+                <span>笔记 <b>{insight.noteCount}</b></span>
+                <span>到期 <b>{insight.dueReviewCount}</b></span>
+                <span>计划 <b>{insight.planCompletionRate}%</b></span>
+                <span>掌握 <b>{insight.averageMastery}</b></span>
+              </div>
+              <p className="risk-line">{insight.risk}</p>
               <div className="chips compact-chips">
                 {goal.linkedKnowledge.map((item) => (
                   <span className="chip static" key={item}>
@@ -1390,7 +1668,8 @@ function App() {
                 ))}
               </div>
             </div>
-          ))}
+            );
+          })}
         </section>
       </div>
     );
@@ -1651,6 +1930,19 @@ function App() {
     );
   }
 
+  if (state.goals.length === 0) {
+    return (
+      <GoalOnboardingScreen
+        currentUser={currentUser}
+        draft={goalDraft}
+        onDraftChange={setGoalDraft}
+        onApplyTemplate={applyGoalTemplate}
+        onAddGoal={addGoal}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -1658,7 +1950,7 @@ function App() {
           <span>学</span>
           <div>
             <strong>个人学习系统</strong>
-            <small>闭环管理 v1</small>
+            <small>目标驱动 v2</small>
           </div>
         </div>
         <nav>
@@ -1763,10 +2055,12 @@ function Badge({
 function ReviewCard({
   reminder,
   note,
+  goalTitle,
   onComplete,
 }: {
   reminder: ReviewReminder;
   note?: Note;
+  goalTitle?: string;
   onComplete: (reminder: ReviewReminder, score: number, mode: ReviewMode) => void;
 }) {
   return (
@@ -1774,6 +2068,7 @@ function ReviewCard({
       <div>
         <strong>{note?.title ?? "已删除笔记"}</strong>
         <span>{reminder.conceptName || "整篇笔记"} · 第 {reminder.intervalDays} 天</span>
+        <span>{goalTitle || "未关联目标"}</span>
         <small>到期 {reminder.dueAt}</small>
       </div>
       <div className="review-actions">
@@ -1811,6 +2106,159 @@ function LoadingScreen({ text }: { text: string }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function GoalOnboardingScreen({
+  currentUser,
+  draft,
+  onDraftChange,
+  onApplyTemplate,
+  onAddGoal,
+  onLogout,
+}: {
+  currentUser: AuthUser;
+  draft: GoalDraft;
+  onDraftChange: (draft: GoalDraft) => void;
+  onApplyTemplate: (templateKey: string) => void;
+  onAddGoal: () => void;
+  onLogout: () => void;
+}) {
+  const selectedTemplate = getGoalTemplate(draft.templateKey);
+
+  return (
+    <div className="onboarding-page">
+      <section className="onboarding-panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">首次目标初始化</p>
+            <h1>先创建一个学习目标</h1>
+            <p className="onboarding-copy">
+              系统会围绕目标组织笔记、计划、复习、总结和 AI 建议。目标方向可以自由填写，例如英语六级、毕业设计、软考、Java 后端或读书计划。
+            </p>
+          </div>
+          <div className="top-actions">
+            <Badge tone="neutral">{currentUser.username}</Badge>
+            <button className="ghost-button" onClick={onLogout}>
+              <LogOut size={16} />
+              退出
+            </button>
+          </div>
+        </div>
+
+        <div className="goal-template-grid">
+          {goalTemplates.map((template) => (
+            <button
+              className={`goal-template-card ${draft.templateKey === template.key ? "active" : ""}`}
+              key={template.key}
+              onClick={() => onApplyTemplate(template.key)}
+            >
+              <strong>{template.label}</strong>
+              <span>{template.domain}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="form-grid goal-form-grid">
+          <label>
+            目标名称
+            <input
+              autoFocus
+              placeholder="例如：英语六级真题刷完"
+              value={draft.title}
+              onChange={(event) => onDraftChange({ ...draft, title: event.target.value })}
+            />
+          </label>
+          <label>
+            目标方向
+            <input
+              placeholder="英语六级、毕业设计、软考、Java 后端..."
+              value={draft.domain}
+              onChange={(event) => onDraftChange({ ...draft, domain: event.target.value })}
+            />
+          </label>
+          <label>
+            分类结构
+            <input
+              placeholder="真题 / 单词 / 听力 / 作文"
+              value={draft.category}
+              onChange={(event) => onDraftChange({ ...draft, category: event.target.value })}
+            />
+          </label>
+          <label>
+            截止时间
+            <input
+              type="date"
+              value={draft.deadline}
+              onChange={(event) => onDraftChange({ ...draft, deadline: event.target.value })}
+            />
+          </label>
+          <label>
+            重要程度
+            <select
+              value={draft.importance}
+              onChange={(event) =>
+                onDraftChange({
+                  ...draft,
+                  importance: Number(event.target.value) as GoalImportance,
+                })
+              }
+            >
+              {([1, 2, 3, 4, 5] as GoalImportance[]).map((importance) => (
+                <option key={importance} value={importance}>
+                  {importance} · {goalImportanceLabels[importance]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            每周投入小时
+            <input
+              type="number"
+              min="0"
+              value={draft.weeklyHours}
+              onChange={(event) =>
+                onDraftChange({ ...draft, weeklyHours: Number(event.target.value) })
+              }
+            />
+          </label>
+          <label className="wide-field">
+            当前基础
+            <textarea
+              placeholder={selectedTemplate.descriptionHint}
+              value={draft.currentLevel}
+              onChange={(event) => onDraftChange({ ...draft, currentLevel: event.target.value })}
+            />
+          </label>
+          <label className="wide-field">
+            目标说明
+            <textarea
+              placeholder="写清楚完成标准、阶段产出或需要覆盖的能力范围"
+              value={draft.description}
+              onChange={(event) => onDraftChange({ ...draft, description: event.target.value })}
+            />
+          </label>
+        </div>
+
+        <div className="goal-suggestion-row">
+          <span>建议初始分类</span>
+          <div className="chips compact-chips">
+            {(selectedTemplate.suggestions.length
+              ? selectedTemplate.suggestions
+              : ["笔记", "计划", "复习", "复盘"]
+            ).map((item) => (
+              <span className="chip static" key={item}>
+                {item}
+              </span>
+            ))}
+          </div>
+          <button className="primary-button" onClick={onAddGoal}>
+            <Plus size={18} />
+            创建并进入系统
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

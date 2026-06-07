@@ -1,5 +1,5 @@
 import type { AppState, Note } from "../types";
-import { dueReminders, trackShortLabels } from "./learning";
+import { buildGoalInsights, dueReminders, goalImportanceLabels, trackShortLabels } from "./learning";
 
 export type AiAction = "summary" | "concepts" | "quiz" | "socratic" | "next";
 
@@ -82,12 +82,43 @@ function buildSocraticQuestions(note: Note) {
 }
 
 function buildNextSuggestions(state: AppState) {
+  const goalInsights = buildGoalInsights(state).slice(0, 3);
   const weakNotes = state.notes
     .filter((note) => note.mastery === "未学" || note.mastery === "初学")
     .slice(0, 3);
   const due = dueReminders(state.reviewReminders);
   const activeProjects = state.projects.filter((project) => project.nextAction.trim());
   const incompletePlans = state.plans.filter((plan) => plan.status !== "完成").slice(0, 3);
+
+  if (goalInsights.length > 0) {
+    const goalSuggestions = goalInsights.map((insight, index) => {
+      const relatedPlan = state.plans.find(
+        (plan) => plan.goalId === insight.goal.id && plan.status !== "完成",
+      );
+      const relatedNote = state.notes.find((note) =>
+        note.associatedGoalIds.includes(insight.goal.id) &&
+        (note.mastery === "未学" || note.mastery === "初学"),
+      );
+      const action =
+        insight.dueReviewCount > 0
+          ? `先完成 ${insight.dueReviewCount} 个到期复习`
+          : relatedPlan
+            ? `推进计划「${relatedPlan.title}」`
+            : relatedNote
+              ? `把「${relatedNote.title}」从${relatedNote.mastery}推进到理解`
+              : "拆出一个 1-2 小时内能完成的下一步动作";
+      const reasons = insight.reasons.length ? `，原因：${insight.reasons.join("、")}` : "";
+      return `${index + 1}. ${insight.goal.title}：${action}。重要程度 ${goalImportanceLabels[insight.goal.importance]}，优先级 ${insight.priorityScore}${reasons}。`;
+    });
+
+    return [
+      "今日目标驱动建议：",
+      ...goalSuggestions,
+      incompletePlans.length > 0
+        ? `补充提醒：当前还有 ${incompletePlans.length} 项未完成计划，先处理「${incompletePlans[0].title}」。`
+        : "补充提醒：今天可以结束前做一次目标进度复盘，更新最重要目标的进度。",
+    ].join("\n");
+  }
 
   const suggestions = [
     due.length > 0
