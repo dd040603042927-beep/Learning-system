@@ -21,14 +21,20 @@ import {
   Upload,
 } from "lucide-react";
 import type {
+  AnswerAttempt,
   Goal,
   GoalImportance,
   Importance,
+  Milestone,
+  MilestoneStatus,
+  Mistake,
   Note,
   NoteType,
   PlanScope,
   PlanStatus,
   PortfolioProject,
+  Question,
+  Recommendation,
   ReviewMode,
   ReviewReminder,
   StudyPlan,
@@ -37,25 +43,35 @@ import type {
 import { aiActionLabels, runLocalAi, type AiAction } from "./lib/ai";
 import {
   addDaysIso,
+  applyKnowledgeEvidence,
   buildGoalInsights,
+  buildLearningAnalytics,
+  buildAttemptFeedback,
+  buildRecommendations,
   buildReviewSchedule,
   buildWeeklySummary,
   cleanUnique,
   completionRate,
+  createStudyEvent,
   dueReminders,
+  generateQuestionsFromNote,
   getGoalTemplate,
   getWeekStartIso,
   goalImportanceLabels,
   goalStatuses,
   goalTemplates,
+  masteryFromScore,
   nextIntervalByScore,
   normalizeState,
   planFromNoteAction,
+  reviewEvidenceDelta,
   splitList,
   todayIso,
   trackLabels,
   trackShortLabels,
   uid,
+  updateKnowledgeAfterQuestionAttempt,
+  upsertMistakeFromAttempt,
   upcomingReminders,
   upsertKnowledgeFromNote,
 } from "./lib/learning";
@@ -99,9 +115,9 @@ const tabs: Array<{ key: TabKey; label: string; icon: typeof Gauge }> = [
   { key: "dashboard", label: "总览", icon: Gauge },
   { key: "goals", label: "我的目标", icon: Target },
   { key: "notes", label: "笔记库", icon: NotebookPen },
+  { key: "reviews", label: "训练中心", icon: RotateCcw },
   { key: "plans", label: "学习计划", icon: CalendarCheck },
-  { key: "reviews", label: "复习系统", icon: RotateCcw },
-  { key: "reflections", label: "总结反思", icon: FileText },
+  { key: "reflections", label: "复盘分析", icon: FileText },
   { key: "knowledge", label: "知识点", icon: Tags },
   { key: "projects", label: "项目作品集", icon: BriefcaseBusiness },
   { key: "ai", label: "AI 助手", icon: Bot },
@@ -113,6 +129,8 @@ const importances: Importance[] = ["低", "中", "高"];
 const tracks: Track[] = ["kaoyan", "career", "shared"];
 const planScopes: PlanScope[] = ["今日", "本周", "下周"];
 const planStatuses: PlanStatus[] = ["未开始", "进行中", "完成"];
+const milestoneStatuses: MilestoneStatus[] = ["未开始", "进行中", "完成", "延期"];
+const questionTypes: Question["type"][] = ["选择题", "简答题", "面试题", "费曼讲解题"];
 
 function createBlankNote(goals: Goal[]): Note {
   const today = todayIso();
@@ -167,6 +185,12 @@ function App() {
     goalId: "",
     dueDate: todayIso(),
   });
+  const [milestoneDraft, setMilestoneDraft] = useState({
+    goalId: state.goals[0]?.id ?? "",
+    title: "",
+    description: "",
+    deadline: addDaysIso(todayIso(), 14),
+  });
   const [goalDraft, setGoalDraft] = useState<GoalDraft>({
     title: "",
     templateKey: "custom",
@@ -187,6 +211,22 @@ function App() {
     learnings: "",
     nextAction: "",
   });
+  const [questionDraft, setQuestionDraft] = useState({
+    noteId: state.notes[0]?.id ?? "",
+    goalId: state.goals[0]?.id ?? "",
+    type: "简答题" as Question["type"],
+    question: "",
+    answer: "",
+    difficulty: 3 as Question["difficulty"],
+  });
+  const [selectedQuestionId, setSelectedQuestionId] = useState(state.questions[0]?.id ?? "");
+  const selectedQuestion = useMemo(
+    () => state.questions.find((question) => question.id === selectedQuestionId),
+    [selectedQuestionId, state.questions],
+  );
+  const [answerDrafts, setAnswerDrafts] = useState<
+    Record<string, { answerText: string; score: number }>
+  >({});
   const [aiAction, setAiAction] = useState<AiAction>("next");
   const [aiOutput, setAiOutput] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
@@ -195,6 +235,7 @@ function App() {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [editingPlanId, setEditingPlanId] = useState("");
   const [editingGoalId, setEditingGoalId] = useState("");
+  const [editingMilestoneId, setEditingMilestoneId] = useState("");
   const [editingProjectId, setEditingProjectId] = useState("");
 
   function applyAuthPayload(payload: AuthPayload) {
@@ -257,6 +298,23 @@ function App() {
   }, [state.notes, selectedNoteId]);
 
   useEffect(() => {
+    if (state.questions.some((question) => question.id === selectedQuestionId)) return;
+    setSelectedQuestionId(state.questions[0]?.id ?? "");
+  }, [state.questions, selectedQuestionId]);
+
+  useEffect(() => {
+    setQuestionDraft((current) => ({
+      ...current,
+      noteId: current.noteId || state.notes[0]?.id || "",
+      goalId: current.goalId || state.goals[0]?.id || "",
+    }));
+    setMilestoneDraft((current) => ({
+      ...current,
+      goalId: current.goalId || state.goals[0]?.id || "",
+    }));
+  }, [state.notes, state.goals]);
+
+  useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(""), 2600);
     return () => window.clearTimeout(timer);
@@ -269,6 +327,8 @@ function App() {
   );
   const planRate = completionRate(state.plans);
   const goalInsights = useMemo(() => buildGoalInsights(state), [state]);
+  const learningAnalytics = useMemo(() => buildLearningAnalytics(state), [state]);
+  const recommendationList = useMemo(() => buildRecommendations(state), [state]);
   const topGoalInsight = goalInsights[0];
 
   function showNotice(message: string) {
@@ -345,6 +405,17 @@ function App() {
           current.goals,
         ),
         reviewReminders: buildReviewSchedule(normalized, current.reviewReminders),
+        studyEvents: exists
+          ? current.studyEvents
+          : [
+              createStudyEvent({
+                type: "created_note",
+                goalId: normalized.associatedGoalIds[0],
+                noteId: normalized.id,
+                title: `创建笔记：${normalized.title}`,
+              }),
+              ...current.studyEvents,
+            ],
       };
     });
     setDraftNote(normalized);
@@ -390,10 +461,25 @@ function App() {
   }
 
   function updatePlanStatus(planId: string, status: PlanStatus) {
-    setState((current) => ({
-      ...current,
-      plans: current.plans.map((plan) => (plan.id === planId ? { ...plan, status } : plan)),
-    }));
+    setState((current) => {
+      const plan = current.plans.find((item) => item.id === planId);
+      const shouldRecordCompletion = plan && plan.status !== "完成" && status === "完成";
+      return {
+        ...current,
+        plans: current.plans.map((item) => (item.id === planId ? { ...item, status } : item)),
+        studyEvents: shouldRecordCompletion
+          ? [
+              createStudyEvent({
+                type: "completed_plan",
+                goalId: plan.goalId,
+                noteId: plan.noteId,
+                title: `完成计划：${plan.title}`,
+              }),
+              ...current.studyEvents,
+            ]
+          : current.studyEvents,
+      };
+    });
   }
 
   function updatePlan(planId: string, patch: Partial<StudyPlan>) {
@@ -484,6 +570,14 @@ function App() {
             ? { ...item, reviewRecords: [record, ...item.reviewRecords] }
             : item,
         ),
+        knowledgePoints: applyKnowledgeEvidence(current.knowledgePoints, {
+          noteId: reminder.noteId,
+          goalId: reminder.goalId ?? note?.associatedGoalIds[0],
+          conceptName: reminder.conceptName,
+          delta: reviewEvidenceDelta(score, mode),
+          score: score * 20,
+          reviewedAt: now,
+        }),
         reviewReminders: [
           ...current.reviewReminders.map((item) =>
             item.id === reminder.id
@@ -493,6 +587,16 @@ function App() {
           nextReminder,
         ],
         plans: remedialPlan ? [remedialPlan, ...current.plans] : current.plans,
+        studyEvents: [
+          createStudyEvent({
+            type: "completed_review",
+            goalId: reminder.goalId ?? note?.associatedGoalIds[0],
+            noteId: reminder.noteId,
+            score: score * 20,
+            title: `完成${mode}：${note?.title ?? reminder.conceptName ?? "复习项"}`,
+          }),
+          ...current.studyEvents,
+        ],
       };
     });
     showNotice(score <= 2 ? "已记录复习结果，并生成重学计划。" : "已完成复习并安排下一轮。");
@@ -516,6 +620,14 @@ function App() {
           createdAt: todayIso(),
         },
         ...current.reflections,
+      ],
+      studyEvents: [
+        createStudyEvent({
+          type: "created_reflection",
+          goalId: goalInsights[0]?.goal.id,
+          title: `生成周总结：${weekStart}`,
+        }),
+        ...current.studyEvents,
       ],
     }));
     showNotice("已根据当前数据生成本周总结草稿，请补充反思。");
@@ -558,7 +670,18 @@ function App() {
       createdAt: now,
       updatedAt: now,
     };
-    setState((current) => ({ ...current, goals: [goal, ...current.goals] }));
+    setState((current) => ({
+      ...current,
+      goals: [goal, ...current.goals],
+      studyEvents: [
+        createStudyEvent({
+          type: "updated_goal",
+          goalId: goal.id,
+          title: `创建目标：${goal.title}`,
+        }),
+        ...current.studyEvents,
+      ],
+    }));
     setGoalDraft({
       ...goalDraft,
       title: "",
@@ -605,11 +728,21 @@ function App() {
         ...point,
         goalIds: point.goalIds.filter((id) => id !== goalId),
       })),
+      milestones: current.milestones.filter((milestone) => milestone.goalId !== goalId),
       plans: current.plans.map((plan) =>
         plan.goalId === goalId ? { ...plan, goalId: undefined } : plan,
       ),
       reviewReminders: current.reviewReminders.map((reminder) =>
         reminder.goalId === goalId ? { ...reminder, goalId: undefined } : reminder,
+      ),
+      questions: current.questions.map((question) =>
+        question.goalId === goalId ? { ...question, goalId: undefined } : question,
+      ),
+      mistakes: current.mistakes.map((mistake) =>
+        mistake.goalId === goalId ? { ...mistake, goalId: undefined } : mistake,
+      ),
+      recommendations: current.recommendations.filter(
+        (recommendation) => recommendation.goalId !== goalId,
       ),
     }));
     setEditingGoalId("");
@@ -629,6 +762,296 @@ function App() {
       currentLevel: "",
       description: "",
     });
+  }
+
+  function addMilestone() {
+    const selectedGoal = state.goals.find((goal) => goal.id === milestoneDraft.goalId);
+    if (!selectedGoal || !milestoneDraft.title.trim()) {
+      showNotice("请选择目标并填写里程碑标题。");
+      return;
+    }
+    const now = todayIso();
+    const milestone: Milestone = {
+      id: uid("milestone"),
+      goalId: selectedGoal.id,
+      title: milestoneDraft.title.trim(),
+      description: milestoneDraft.description.trim(),
+      deadline: milestoneDraft.deadline,
+      status: "未开始",
+      progress: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    setState((current) => ({
+      ...current,
+      milestones: [milestone, ...current.milestones],
+      studyEvents: [
+        createStudyEvent({
+          type: "created_milestone",
+          goalId: selectedGoal.id,
+          title: `创建里程碑：${milestone.title}`,
+        }),
+        ...current.studyEvents,
+      ],
+    }));
+    setMilestoneDraft({
+      ...milestoneDraft,
+      title: "",
+      description: "",
+      deadline: addDaysIso(todayIso(), 14),
+    });
+    showNotice("已添加目标里程碑。");
+  }
+
+  function updateMilestone(milestoneId: string, patch: Partial<Milestone>) {
+    setState((current) => ({
+      ...current,
+      milestones: current.milestones.map((milestone) => {
+        if (milestone.id !== milestoneId) return milestone;
+        const nextProgress =
+          patch.status === "完成" && patch.progress === undefined
+            ? 100
+            : patch.progress !== undefined
+              ? Math.min(100, Math.max(0, Math.round(patch.progress)))
+              : milestone.progress;
+        return {
+          ...milestone,
+          ...patch,
+          progress: nextProgress,
+          updatedAt: todayIso(),
+        };
+      }),
+    }));
+  }
+
+  function deleteMilestone(milestoneId: string) {
+    setState((current) => ({
+      ...current,
+      milestones: current.milestones.filter((milestone) => milestone.id !== milestoneId),
+      plans: current.plans.map((plan) =>
+        plan.milestoneId === milestoneId ? { ...plan, milestoneId: undefined } : plan,
+      ),
+    }));
+    setEditingMilestoneId("");
+  }
+
+  function generateQuestionsForSelectedNote() {
+    const note = state.notes.find((item) => item.id === questionDraft.noteId) ?? selectedNote;
+    if (!note) {
+      showNotice("请先选择一篇笔记。");
+      return;
+    }
+    const questions = generateQuestionsFromNote(note, state.knowledgePoints, 5);
+    setState((current) => ({
+      ...current,
+      questions: [...questions, ...current.questions],
+      studyEvents: [
+        createStudyEvent({
+          type: "created_question",
+          goalId: note.associatedGoalIds[0],
+          noteId: note.id,
+          title: `从笔记生成 5 道自测题：${note.title}`,
+        }),
+        ...current.studyEvents,
+      ],
+    }));
+    setSelectedQuestionId(questions[0]?.id ?? selectedQuestionId);
+    setActiveTab("reviews");
+    showNotice("已根据笔记生成 5 道自测题。");
+  }
+
+  function addManualQuestion() {
+    const questionText = questionDraft.question.trim();
+    if (!questionText) {
+      showNotice("请填写题干。");
+      return;
+    }
+    const note = state.notes.find((item) => item.id === questionDraft.noteId);
+    const goalId = questionDraft.goalId || note?.associatedGoalIds[0];
+    const knowledgePointIds = state.knowledgePoints
+      .filter(
+        (point) =>
+          (note ? point.noteIds.includes(note.id) : false) ||
+          (goalId ? point.goalIds.includes(goalId) : false),
+      )
+      .map((point) => point.id);
+    const question: Question = {
+      id: uid("question"),
+      goalId,
+      noteId: note?.id,
+      knowledgePointIds,
+      type: questionDraft.type,
+      question: questionText,
+      answer: questionDraft.answer.trim(),
+      difficulty: questionDraft.difficulty,
+      source: "手动创建",
+      createdAt: todayIso(),
+    };
+    setState((current) => ({
+      ...current,
+      questions: [question, ...current.questions],
+      studyEvents: [
+        createStudyEvent({
+          type: "created_question",
+          goalId,
+          noteId: note?.id,
+          title: `手动创建自测题：${question.question.slice(0, 24)}`,
+        }),
+        ...current.studyEvents,
+      ],
+    }));
+    setSelectedQuestionId(question.id);
+    setQuestionDraft({ ...questionDraft, question: "", answer: "" });
+    showNotice("已添加自测题。");
+  }
+
+  function deleteQuestion(questionId: string) {
+    setState((current) => ({
+      ...current,
+      questions: current.questions.filter((question) => question.id !== questionId),
+      answerAttempts: current.answerAttempts.filter((attempt) => attempt.questionId !== questionId),
+      mistakes: current.mistakes.filter((mistake) => mistake.questionId !== questionId),
+    }));
+  }
+
+  function submitQuestionAttempt(question: Question) {
+    const draft = answerDrafts[question.id] ?? { answerText: "", score: 60 };
+    const score = Math.min(100, Math.max(0, Math.round(Number(draft.score) || 0)));
+    const feedback = buildAttemptFeedback(question, score, draft.answerText);
+    const attempt: AnswerAttempt = {
+      id: uid("attempt"),
+      questionId: question.id,
+      score,
+      answerText: draft.answerText.trim(),
+      feedback,
+      createdAt: todayIso(),
+    };
+
+    setState((current) => {
+      const mistakeResult = upsertMistakeFromAttempt(current.mistakes, question, attempt);
+      const knowledgePoints = updateKnowledgeAfterQuestionAttempt(
+        current.knowledgePoints,
+        current.questions,
+        current.answerAttempts,
+        question,
+        attempt,
+        mistakeResult.repeatedMistake,
+      );
+      const remedialReminder: ReviewReminder | null =
+        mistakeResult.mistake && question.noteId
+          ? {
+              id: uid("review"),
+              noteId: question.noteId,
+              goalId: question.goalId,
+              conceptName: question.question.slice(0, 18),
+              dueAt: addDaysIso(todayIso(), 1),
+              intervalDays: 1,
+              status: "待复习",
+              createdAt: todayIso(),
+              lastScore: Math.round(score / 20),
+            }
+          : null;
+
+      return {
+        ...current,
+        answerAttempts: [attempt, ...current.answerAttempts],
+        mistakes: mistakeResult.mistakes,
+        knowledgePoints,
+        reviewReminders: remedialReminder
+          ? [remedialReminder, ...current.reviewReminders]
+          : current.reviewReminders,
+        studyEvents: [
+          createStudyEvent({
+            type: "answered_question",
+            goalId: question.goalId,
+            noteId: question.noteId,
+            score,
+            title: `完成自测：${question.question.slice(0, 24)}，得分 ${score}`,
+          }),
+          ...(mistakeResult.mistake
+            ? [
+                createStudyEvent({
+                  type: "created_mistake" as const,
+                  goalId: question.goalId,
+                  noteId: question.noteId,
+                  score,
+                  title: `错题入本：${question.question.slice(0, 24)}`,
+                }),
+              ]
+            : []),
+          ...current.studyEvents,
+        ],
+      };
+    });
+    setAnswerDrafts((current) => ({ ...current, [question.id]: { answerText: "", score: 80 } }));
+    showNotice(score < 60 ? "已提交自测，低分题已进入错题本。" : "已提交自测并更新掌握度。");
+  }
+
+  function markMistakeReviewed(mistake: Mistake) {
+    setState((current) => ({
+      ...current,
+      mistakes: current.mistakes.map((item) =>
+        item.id === mistake.id ? { ...item, status: "已复习", updatedAt: todayIso() } : item,
+      ),
+      knowledgePoints: applyKnowledgeEvidence(current.knowledgePoints, {
+        knowledgePointIds: mistake.knowledgePointIds,
+        noteId: mistake.noteId,
+        goalId: mistake.goalId,
+        delta: 5,
+        reviewedAt: todayIso(),
+      }),
+      studyEvents: [
+        createStudyEvent({
+          type: "completed_review",
+          goalId: mistake.goalId,
+          noteId: mistake.noteId,
+          title: `复盘错题：${mistake.title.slice(0, 24)}`,
+        }),
+        ...current.studyEvents,
+      ],
+    }));
+    showNotice("已标记错题复盘，并小幅提升关联知识点掌握分。");
+  }
+
+  function refreshRecommendations() {
+    setState((current) => ({
+      ...current,
+      recommendations: buildRecommendations(current),
+    }));
+    showNotice("已根据掌握度、错题、复习和里程碑刷新推荐。");
+  }
+
+  function updateRecommendationStatus(recommendation: Recommendation, status: Recommendation["status"]) {
+    setState((current) => {
+      const recommendations = buildRecommendations(current).map((item) =>
+        item.id === recommendation.id ? { ...item, status } : item,
+      );
+      const acceptedPlan: StudyPlan | null =
+        status === "已接受"
+          ? {
+              id: uid("plan"),
+              title: recommendation.title,
+              scope: "今日",
+              category: recommendation.actionType,
+              track:
+                current.goals.find((goal) => goal.id === recommendation.goalId)?.track ??
+                "shared",
+              dueDate: todayIso(),
+              status: "未开始",
+              source: "AI建议",
+              goalId: recommendation.goalId,
+              noteId: recommendation.noteId,
+              createdAt: todayIso(),
+            }
+          : null;
+
+      return {
+        ...current,
+        recommendations,
+        plans: acceptedPlan ? [acceptedPlan, ...current.plans] : current.plans,
+      };
+    });
+    showNotice(status === "已接受" ? "已接受推荐，并转成今日计划。" : "已更新推荐状态。");
   }
 
   function addProject() {
@@ -730,6 +1153,10 @@ function App() {
         <section className="dashboard-grid">
           <MetricCard label="目标" value={state.goals.length} hint="用户自定义学习方向" />
           <MetricCard label="到期复习" value={due.length} hint="今天需要处理" tone="warning" />
+          <MetricCard label="平均自测分" value={`${learningAnalytics.averageTestScore || "-"}分`} hint="输出型证据" tone="info" />
+          <MetricCard label="低掌握知识点" value={learningAnalytics.lowMasteryKnowledgeCount} hint="系统计算掌握分低于 40" tone="warning" />
+          <MetricCard label="错题" value={state.mistakes.filter((mistake) => mistake.status === "待复习").length} hint="待复盘题目" tone="warning" />
+          <MetricCard label="本周证据" value={learningAnalytics.weeklyEvidenceCount} hint="学习事件数量" tone="success" />
           <MetricCard label="计划完成率" value={`${planRate}%`} hint="当前计划池" tone="success" />
           <MetricCard
             label="当前优先"
@@ -759,6 +1186,28 @@ function App() {
                 </div>
               ),
             )}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">透明推荐</p>
+              <h2>系统建议必须说明原因</h2>
+            </div>
+            <button className="ghost-button" onClick={refreshRecommendations}>
+              刷新推荐
+            </button>
+          </div>
+          <div className="recommendation-list">
+            {recommendationList.slice(0, 4).map((recommendation) => (
+              <RecommendationCard
+                key={recommendation.id}
+                recommendation={recommendation}
+                onStatusChange={updateRecommendationStatus}
+              />
+            ))}
+            {recommendationList.length === 0 && <EmptyState text="暂无推荐。完成复习、自测或里程碑后会生成理由。" />}
           </div>
         </section>
 
@@ -831,14 +1280,15 @@ function App() {
                 <div>
                   <strong>{insight.goal.title}</strong>
                   <span>
-                    {insight.goal.domain} · 笔记 {insight.noteCount} · 到期复习{" "}
-                    {insight.dueReviewCount} · {insight.risk}
+                    {insight.goal.domain} · 里程碑 {insight.milestoneCount} · 笔记{" "}
+                    {insight.noteCount} · 错题 {insight.mistakeCount} · {insight.risk}
                   </span>
                 </div>
-                <div className="progress">
+                <div className="progress dual-progress">
                   <i style={{ width: `${insight.goal.progress}%` }} />
+                  <em style={{ width: `${insight.systemProgress}%` }} />
                 </div>
-                <b>{insight.goal.progress}%</b>
+                <b>{insight.goal.progress}%/{insight.systemProgress}%</b>
               </div>
             ))}
             {goalInsights.length === 0 && <EmptyState text="暂无目标分析。" />}
@@ -1058,6 +1508,9 @@ function App() {
             <button className="ghost-button" onClick={addPlanFromCurrentNote}>
               加入下周计划
             </button>
+            <button className="primary-button" onClick={generateQuestionsForSelectedNote}>
+              生成自测题
+            </button>
           </div>
         </section>
       </section>
@@ -1073,11 +1526,13 @@ function App() {
             <h2>把笔记拆成可复习的知识点</h2>
           </div>
         </div>
-        <div className="data-table">
+        <div className="data-table knowledge-table">
           <div className="table-head">
             <span>知识点</span>
             <span>路线</span>
-            <span>掌握</span>
+            <span>手动掌握</span>
+            <span>系统掌握</span>
+            <span>证据</span>
             <span>优先级</span>
             <span>关联目标</span>
             <span>来源笔记</span>
@@ -1087,6 +1542,13 @@ function App() {
               <strong>{point.name}</strong>
               <span>{point.tracks.map((track) => trackShortLabels[track]).join(" / ")}</span>
               <Badge tone="neutral">{point.mastery}</Badge>
+              <span>
+                <b>{point.masteryScore}</b> · {point.systemMastery || masteryFromScore(point.masteryScore)}
+              </span>
+              <span>
+                {point.evidenceCount} 条
+                {point.lastTestScore !== undefined ? ` · 自测 ${point.lastTestScore}` : ""}
+              </span>
               <Badge tone={point.reviewPriority === "高" ? "danger" : "neutral"}>
                 {point.reviewPriority}
               </Badge>
@@ -1279,26 +1741,275 @@ function App() {
   }
 
   function renderReviews() {
+    const currentQuestion = selectedQuestion ?? state.questions[0];
+    const currentAnswerDraft =
+      currentQuestion && answerDrafts[currentQuestion.id]
+        ? answerDrafts[currentQuestion.id]
+        : { answerText: "", score: 80 };
+
     return (
-      <section className="two-column">
-        <div className="panel">
+      <div className="stack">
+        <section className="dashboard-grid">
+          <MetricCard label="题库" value={state.questions.length} hint="自测与训练题" tone="info" />
+          <MetricCard label="答题记录" value={state.answerAttempts.length} hint="输出证据" tone="success" />
+          <MetricCard
+            label="待复盘错题"
+            value={state.mistakes.filter((mistake) => mistake.status === "待复习").length}
+            hint="影响掌握分"
+            tone="warning"
+          />
+          <MetricCard label="到期复习" value={due.length} hint="间隔重复" tone="warning" />
+        </section>
+
+        <section className="two-column training-grid">
+          <div className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">复习</p>
+                <h2>今日到期</h2>
+              </div>
+            </div>
+            <div className="card-list">
+              {due.map((reminder) => (
+                <ReviewCard
+                  key={reminder.id}
+                  reminder={reminder}
+                  note={state.notes.find((note) => note.id === reminder.noteId)}
+                  goalTitle={getReminderGoalTitle(reminder)}
+                  onComplete={completeReview}
+                />
+              ))}
+              {due.length === 0 && <EmptyState text="没有到期项。" />}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">生成题目</p>
+                <h2>从笔记进入自测</h2>
+              </div>
+              <button className="primary-button" onClick={generateQuestionsForSelectedNote}>
+                生成 5 题
+              </button>
+            </div>
+            <div className="form-grid compact-form">
+              <label>
+                关联笔记
+                <select
+                  value={questionDraft.noteId}
+                  onChange={(event) => {
+                    const note = state.notes.find((item) => item.id === event.target.value);
+                    setQuestionDraft({
+                      ...questionDraft,
+                      noteId: event.target.value,
+                      goalId: note?.associatedGoalIds[0] ?? questionDraft.goalId,
+                    });
+                    setSelectedNoteId(event.target.value);
+                  }}
+                >
+                  {state.notes.map((note) => (
+                    <option key={note.id} value={note.id}>
+                      {note.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                类型
+                <select
+                  value={questionDraft.type}
+                  onChange={(event) =>
+                    setQuestionDraft({ ...questionDraft, type: event.target.value as Question["type"] })
+                  }
+                >
+                  {questionTypes.map((type) => (
+                    <option key={type}>{type}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="wide-field">
+                手动题干
+                <textarea
+                  value={questionDraft.question}
+                  onChange={(event) =>
+                    setQuestionDraft({ ...questionDraft, question: event.target.value })
+                  }
+                />
+              </label>
+              <label className="wide-field">
+                参考答案
+                <textarea
+                  value={questionDraft.answer}
+                  onChange={(event) =>
+                    setQuestionDraft({ ...questionDraft, answer: event.target.value })
+                  }
+                />
+              </label>
+            </div>
+            <button className="ghost-button" onClick={addManualQuestion}>
+              <Plus size={16} />
+              添加手动题
+            </button>
+          </div>
+        </section>
+
+        <section className="two-column training-grid">
+          <div className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">自测中心</p>
+                <h2>题目训练</h2>
+              </div>
+            </div>
+            <div className="question-list">
+              {state.questions.map((question) => {
+                const goal = state.goals.find((item) => item.id === question.goalId);
+                const note = state.notes.find((item) => item.id === question.noteId);
+                const attempts = state.answerAttempts.filter(
+                  (attempt) => attempt.questionId === question.id,
+                );
+                return (
+                  <button
+                    className={`question-item ${currentQuestion?.id === question.id ? "active" : ""}`}
+                    key={question.id}
+                    onClick={() => setSelectedQuestionId(question.id)}
+                  >
+                    <strong>{question.question}</strong>
+                    <span>
+                      {question.type} · 难度 {question.difficulty} ·{" "}
+                      {goal?.title || note?.title || "未关联"}
+                    </span>
+                    <small>
+                      {attempts.length > 0
+                        ? `最近得分 ${attempts.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0].score}`
+                        : "尚未作答"}
+                    </small>
+                  </button>
+                );
+              })}
+              {state.questions.length === 0 && <EmptyState text="还没有题目，可先从笔记生成 5 道自测题。" />}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">答题</p>
+                <h2>{currentQuestion ? "提交一次自测" : "暂无题目"}</h2>
+              </div>
+              {currentQuestion && (
+                <button className="ghost-button danger" onClick={() => deleteQuestion(currentQuestion.id)}>
+                  <Trash2 size={15} />
+                  删除题目
+                </button>
+              )}
+            </div>
+            {currentQuestion ? (
+              <div className="answer-panel">
+                <div className="question-stem">
+                  <Badge tone="info">{currentQuestion.type}</Badge>
+                  <strong>{currentQuestion.question}</strong>
+                  <span>
+                    难度 {currentQuestion.difficulty} · 来源 {currentQuestion.source}
+                  </span>
+                </div>
+                <label>
+                  我的答案
+                  <textarea
+                    className="tall"
+                    value={currentAnswerDraft.answerText}
+                    onChange={(event) =>
+                      setAnswerDrafts((current) => ({
+                        ...current,
+                        [currentQuestion.id]: {
+                          ...currentAnswerDraft,
+                          answerText: event.target.value,
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  自评分
+                  <div className="range-row">
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={currentAnswerDraft.score}
+                      onChange={(event) =>
+                        setAnswerDrafts((current) => ({
+                          ...current,
+                          [currentQuestion.id]: {
+                            ...currentAnswerDraft,
+                            score: Number(event.target.value),
+                          },
+                        }))
+                      }
+                    />
+                    <b>{currentAnswerDraft.score}</b>
+                  </div>
+                </label>
+                <details className="answer-reference">
+                  <summary>查看参考答案</summary>
+                  <p>{currentQuestion.answer || "暂无参考答案。"}</p>
+                </details>
+                <button className="primary-button" onClick={() => submitQuestionAttempt(currentQuestion)}>
+                  <CheckCircle2 size={18} />
+                  提交并更新掌握度
+                </button>
+                <div className="timeline">
+                  {state.answerAttempts
+                    .filter((attempt) => attempt.questionId === currentQuestion.id)
+                    .slice(0, 3)
+                    .map((attempt) => (
+                      <div className="timeline-item" key={attempt.id}>
+                        <span>{attempt.createdAt}</span>
+                        <strong>{attempt.score} 分</strong>
+                        <small>{attempt.feedback}</small>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            ) : (
+              <EmptyState text="请选择一道题。" />
+            )}
+          </div>
+        </section>
+
+        <section className="two-column training-grid">
+          <div className="panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">复习系统</p>
-              <h2>今日到期</h2>
+              <p className="eyebrow">错题本</p>
+              <h2>低分题进入复盘</h2>
             </div>
           </div>
           <div className="card-list">
-            {due.map((reminder) => (
-              <ReviewCard
-                key={reminder.id}
-                reminder={reminder}
-                note={state.notes.find((note) => note.id === reminder.noteId)}
-                goalTitle={getReminderGoalTitle(reminder)}
-                onComplete={completeReview}
-              />
-            ))}
-            {due.length === 0 && <EmptyState text="没有到期项。" />}
+            {state.mistakes.map((mistake) => {
+              const question = state.questions.find((item) => item.id === mistake.questionId);
+              const goal = state.goals.find((item) => item.id === mistake.goalId);
+              return (
+                <div className="task-card mistake-card" key={mistake.id}>
+                  <div className="card-title-row">
+                    <Badge tone={mistake.status === "待复习" ? "danger" : "success"}>
+                      {mistake.status}
+                    </Badge>
+                    <span>重复 {mistake.repeatedCount} 次</span>
+                  </div>
+                  <strong>{mistake.title}</strong>
+                  <span>{goal?.title || "未关联目标"}</span>
+                  <small>{mistake.reason || question?.answer || "需要补充错误原因。"}</small>
+                  <div className="card-actions">
+                    <button className="ghost-button" onClick={() => markMistakeReviewed(mistake)}>
+                      标记已复盘
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            {state.mistakes.length === 0 && <EmptyState text="没有错题。低分自测会自动进入这里。" />}
           </div>
         </div>
 
@@ -1326,6 +2037,7 @@ function App() {
           </div>
         </div>
       </section>
+      </div>
     );
   }
 
@@ -1343,6 +2055,56 @@ function App() {
               生成本周总结
             </button>
           </div>
+        </section>
+        <section className="dashboard-grid">
+          <MetricCard
+            label="计划完成率"
+            value={`${learningAnalytics.planCompletionRate}%`}
+            hint="全部学习计划"
+            tone="success"
+          />
+          <MetricCard
+            label="计划延期率"
+            value={`${learningAnalytics.overduePlanRate}%`}
+            hint="未完成且已过截止"
+            tone="warning"
+          />
+          <MetricCard
+            label="复习完成率"
+            value={`${learningAnalytics.reviewCompletionRate}%`}
+            hint="历史提醒处理情况"
+            tone="info"
+          />
+          <MetricCard
+            label="里程碑完成率"
+            value={`${learningAnalytics.milestoneCompletionRate}%`}
+            hint="阶段目标验收"
+            tone="success"
+          />
+          <MetricCard
+            label="平均自测分"
+            value={`${learningAnalytics.averageTestScore || "-"}分`}
+            hint="题目输出表现"
+            tone="info"
+          />
+          <MetricCard
+            label="重复错题率"
+            value={`${learningAnalytics.repeatedMistakeRate}%`}
+            hint="重复出错占比"
+            tone="warning"
+          />
+          <MetricCard
+            label="停滞目标"
+            value={learningAnalytics.stalledGoalCount}
+            hint="7 天未推进或无证据"
+            tone="warning"
+          />
+          <MetricCard
+            label="本周证据"
+            value={learningAnalytics.weeklyEvidenceCount}
+            hint="study_events"
+            tone="success"
+          />
         </section>
         {state.reflections.map((reflection) => (
           <section className="panel reflection-card" key={reflection.id}>
@@ -1530,9 +2292,62 @@ function App() {
           </div>
         </section>
 
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">里程碑</p>
+              <h2>把大目标拆成阶段验收</h2>
+            </div>
+          </div>
+          <div className="inline-form milestone-form">
+            <select
+              value={milestoneDraft.goalId}
+              onChange={(event) =>
+                setMilestoneDraft({ ...milestoneDraft, goalId: event.target.value })
+              }
+            >
+              {goalInsights.map((insight) => (
+                <option key={insight.goal.id} value={insight.goal.id}>
+                  {insight.goal.title}
+                </option>
+              ))}
+            </select>
+            <input
+              placeholder="里程碑标题"
+              value={milestoneDraft.title}
+              onChange={(event) =>
+                setMilestoneDraft({ ...milestoneDraft, title: event.target.value })
+              }
+            />
+            <input
+              type="date"
+              value={milestoneDraft.deadline}
+              onChange={(event) =>
+                setMilestoneDraft({ ...milestoneDraft, deadline: event.target.value })
+              }
+            />
+            <button className="primary-button" onClick={addMilestone}>
+              <Plus size={18} />
+              添加里程碑
+            </button>
+          </div>
+          <label className="single-extra-field">
+            里程碑说明
+            <textarea
+              value={milestoneDraft.description}
+              onChange={(event) =>
+                setMilestoneDraft({ ...milestoneDraft, description: event.target.value })
+              }
+            />
+          </label>
+        </section>
+
         <section className="goal-grid">
           {goalInsights.map((insight) => {
             const goal = insight.goal;
+            const goalMilestones = state.milestones.filter(
+              (milestone) => milestone.goalId === goal.id,
+            );
             const daysText =
               insight.daysLeft === null
                 ? "无截止"
@@ -1640,8 +2455,16 @@ function App() {
                 <strong>优先级 {insight.priorityScore}</strong>
                 <span>{insight.reasons.join("、") || "按当前节奏推进"}</span>
               </div>
-              <div className="progress large">
+              <div className="goal-score-row">
+                <strong>真实进度诊断</strong>
+                <span>
+                  手动 {goal.progress}% · 系统估算 {insight.systemProgress}% · 差异{" "}
+                  {insight.progressGap}%
+                </span>
+              </div>
+              <div className="progress large dual-progress">
                 <i style={{ width: `${goal.progress}%` }} />
+                <em style={{ width: `${insight.systemProgress}%` }} />
               </div>
               <div className="range-row">
                 <input
@@ -1655,9 +2478,106 @@ function App() {
               </div>
               <div className="mini-stat-grid">
                 <span>笔记 <b>{insight.noteCount}</b></span>
-                <span>到期 <b>{insight.dueReviewCount}</b></span>
+                <span>里程碑 <b>{insight.milestoneCount}</b></span>
                 <span>计划 <b>{insight.planCompletionRate}%</b></span>
-                <span>掌握 <b>{insight.averageMastery}</b></span>
+                <span>掌握 <b>{insight.averageMasteryScore}</b></span>
+              </div>
+              <div className="milestone-list">
+                {goalMilestones.map((milestone) => (
+                  <div className="milestone-item" key={milestone.id}>
+                    {editingMilestoneId === milestone.id ? (
+                      <div className="inline-editor">
+                        <input
+                          value={milestone.title}
+                          onChange={(event) =>
+                            updateMilestone(milestone.id, { title: event.target.value })
+                          }
+                        />
+                        <textarea
+                          value={milestone.description}
+                          onChange={(event) =>
+                            updateMilestone(milestone.id, { description: event.target.value })
+                          }
+                        />
+                        <div className="compact-edit-row">
+                          <input
+                            type="date"
+                            value={milestone.deadline}
+                            onChange={(event) =>
+                              updateMilestone(milestone.id, { deadline: event.target.value })
+                            }
+                          />
+                          <select
+                            value={milestone.status}
+                            onChange={(event) =>
+                              updateMilestone(milestone.id, {
+                                status: event.target.value as MilestoneStatus,
+                              })
+                            }
+                          >
+                            {milestoneStatuses.map((status) => (
+                              <option key={status}>{status}</option>
+                            ))}
+                          </select>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={milestone.progress}
+                            onChange={(event) =>
+                              updateMilestone(milestone.id, {
+                                progress: Number(event.target.value),
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="card-title-row">
+                          <strong>{milestone.title}</strong>
+                          <Badge
+                            tone={
+                              milestone.status === "完成"
+                                ? "success"
+                                : milestone.status === "延期"
+                                  ? "danger"
+                                  : "neutral"
+                            }
+                          >
+                            {milestone.status}
+                          </Badge>
+                        </div>
+                        <small>{milestone.description || "未填写说明"}</small>
+                        <span>截止 {milestone.deadline} · 进度 {milestone.progress}%</span>
+                        <div className="progress">
+                          <i style={{ width: `${milestone.progress}%` }} />
+                        </div>
+                      </>
+                    )}
+                    <div className="card-actions">
+                      <button
+                        className="ghost-button"
+                        onClick={() =>
+                          setEditingMilestoneId(
+                            editingMilestoneId === milestone.id ? "" : milestone.id,
+                          )
+                        }
+                      >
+                        <Pencil size={15} />
+                        {editingMilestoneId === milestone.id ? "完成" : "编辑"}
+                      </button>
+                      <button
+                        className="ghost-button danger"
+                        onClick={() => deleteMilestone(milestone.id)}
+                      >
+                        <Trash2 size={15} />
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {goalMilestones.length === 0 && <EmptyState text="还没有里程碑。" />}
               </div>
               <p className="risk-line">{insight.risk}</p>
               <div className="chips compact-chips">
@@ -1818,6 +2738,16 @@ function App() {
               ) : (
                 <>
                   <h2>{project.title}</h2>
+                  <div className="goal-badges">
+                    {(project.goalIds || []).map((goalId) => {
+                      const goal = state.goals.find((item) => item.id === goalId);
+                      return goal ? (
+                        <Badge tone="info" key={goal.id}>
+                          {goal.title}
+                        </Badge>
+                      ) : null;
+                    })}
+                  </div>
                   <div className="chips compact-chips">
                     {project.techStack.map((tech) => (
                       <span className="chip static" key={tech}>
@@ -1825,6 +2755,18 @@ function App() {
                       </span>
                     ))}
                   </div>
+                  {(project.knowledgePointIds || []).length > 0 && (
+                    <div className="chips compact-chips">
+                      {(project.knowledgePointIds || []).map((pointId) => {
+                        const point = state.knowledgePoints.find((item) => item.id === pointId);
+                        return point ? (
+                          <span className="chip static" key={point.id}>
+                            {point.name}
+                          </span>
+                        ) : null;
+                      })}
+                    </div>
+                  )}
                   <dl>
                     <dt>难点</dt>
                     <dd>{project.difficulty || "待补充"}</dd>
@@ -1950,7 +2892,7 @@ function App() {
           <span>学</span>
           <div>
             <strong>个人学习系统</strong>
-            <small>目标驱动 v2</small>
+            <small>智能训练 v3</small>
           </div>
         </div>
         <nav>
@@ -2050,6 +2992,42 @@ function Badge({
   tone?: "neutral" | "success" | "warning" | "danger" | "info";
 }) {
   return <span className={`badge ${tone}`}>{children}</span>;
+}
+
+function RecommendationCard({
+  recommendation,
+  onStatusChange,
+}: {
+  recommendation: Recommendation;
+  onStatusChange: (recommendation: Recommendation, status: Recommendation["status"]) => void;
+}) {
+  return (
+    <div className="recommendation-card">
+      <div className="card-title-row">
+        <div>
+          <Badge tone="info">{recommendation.actionType}</Badge>
+          <strong>{recommendation.title}</strong>
+        </div>
+        <b>{recommendation.priorityScore}</b>
+      </div>
+      <ul>
+        {recommendation.reasons.map((reason) => (
+          <li key={reason}>{reason}</li>
+        ))}
+      </ul>
+      <div className="card-actions">
+        <button className="ghost-button" onClick={() => onStatusChange(recommendation, "已接受")}>
+          接受
+        </button>
+        <button className="ghost-button" onClick={() => onStatusChange(recommendation, "已完成")}>
+          完成
+        </button>
+        <button className="ghost-button danger" onClick={() => onStatusChange(recommendation, "忽略")}>
+          忽略
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function ReviewCard({

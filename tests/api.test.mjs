@@ -76,6 +76,12 @@ test("auth and state API: register, login, save state, read state", async (t) =>
   assert.equal(registered.body.user.username, username);
   assert.ok(registered.body.token);
   assert.ok(Array.isArray(registered.body.state.notes));
+  assert.ok(Array.isArray(registered.body.state.milestones));
+  assert.ok(Array.isArray(registered.body.state.questions));
+  assert.ok(Array.isArray(registered.body.state.answerAttempts));
+  assert.ok(Array.isArray(registered.body.state.mistakes));
+  assert.ok(Array.isArray(registered.body.state.recommendations));
+  assert.ok(Array.isArray(registered.body.state.studyEvents));
   assert.deepEqual(registered.body.state.goals, []);
   assert.ok(
     !registered.body.state.goals.some((goal) =>
@@ -134,8 +140,97 @@ test("auth and state API: register, login, save state, read state", async (t) =>
     createdAt: "2026-06-07",
     updatedAt: "2026-06-07",
   };
+  const knowledgePoint = {
+    id: "kp_cet6_listening",
+    name: "精听",
+    noteIds: [linkedNote.id],
+    goalIds: [customGoal.id],
+    tracks: ["shared"],
+    mastery: "初学",
+    masteryScore: 32,
+    evidenceCount: 2,
+    systemMastery: "初学",
+    lastTestScore: 45,
+    lastReviewedAt: "2026-06-07",
+    repeatedMistakeCount: 1,
+    reviewPriority: "高",
+    reason: "最近自测低分，且进入错题本",
+    updatedAt: "2026-06-07",
+  };
+  const milestone = {
+    id: "milestone_cet6_listening_round1",
+    goalId: customGoal.id,
+    title: "听力真题第一轮",
+    description: "完成 2024 年 6 月听力精听和错题复盘",
+    deadline: "2026-07-01",
+    status: "进行中",
+    progress: 40,
+    createdAt: "2026-06-07",
+    updatedAt: "2026-06-07",
+  };
+  const question = {
+    id: "question_cet6_listening",
+    goalId: customGoal.id,
+    noteId: linkedNote.id,
+    knowledgePointIds: [knowledgePoint.id],
+    type: "简答题",
+    question: "为什么听懂原文但做不对题？",
+    answer: "需要把输入理解、题干定位和选项排除分开训练。",
+    difficulty: 3,
+    source: "AI生成",
+    createdAt: "2026-06-07",
+  };
+  const attempt = {
+    id: "attempt_cet6_listening",
+    questionId: question.id,
+    score: 45,
+    answerText: "因为没有认真听。",
+    feedback: "回答过浅，需要说明题干定位和选项排除。",
+    createdAt: "2026-06-07",
+  };
+  const mistake = {
+    id: "mistake_cet6_listening",
+    questionId: question.id,
+    goalId: customGoal.id,
+    noteId: linkedNote.id,
+    knowledgePointIds: [knowledgePoint.id],
+    title: "听懂原文但做不对题",
+    reason: "没有区分理解输入和题型判断。",
+    repeatedCount: 1,
+    status: "待复习",
+    createdAt: "2026-06-07",
+    updatedAt: "2026-06-07",
+  };
+  const recommendation = {
+    id: "rec_cet6_listening",
+    title: "专项训练：六级听力精听",
+    actionType: "做题",
+    goalId: customGoal.id,
+    noteId: linkedNote.id,
+    knowledgePointId: knowledgePoint.id,
+    priorityScore: 118,
+    reasons: [
+      "关联目标“英语六级真题刷完”，重要程度 5",
+      "最近一次自测 45 分",
+      "出现在 1 道错题中",
+    ],
+    status: "待处理",
+    createdAt: "2026-06-07",
+  };
+  const studyEvent = {
+    id: "event_cet6_answered",
+    type: "answered_question",
+    goalId: customGoal.id,
+    noteId: linkedNote.id,
+    knowledgePointId: knowledgePoint.id,
+    score: 45,
+    title: "完成六级听力自测",
+    createdAt: "2026-06-07",
+  };
   state.goals = [customGoal];
   state.notes = [linkedNote];
+  state.knowledgePoints = [knowledgePoint];
+  state.milestones = [milestone];
   state.plans = [
     {
       id: "plan_api_test",
@@ -148,6 +243,7 @@ test("auth and state API: register, login, save state, read state", async (t) =>
       source: "手动",
       noteId: linkedNote.id,
       goalId: customGoal.id,
+      milestoneId: milestone.id,
       createdAt: "2026-06-07",
     },
   ];
@@ -176,6 +272,11 @@ test("auth and state API: register, login, save state, read state", async (t) =>
       createdAt: "2026-06-07",
     },
   ];
+  state.questions = [question];
+  state.answerAttempts = [attempt];
+  state.mistakes = [mistake];
+  state.recommendations = [recommendation];
+  state.studyEvents = [studyEvent];
 
   const saved = await api(baseUrl, "/api/state", {
     method: "PUT",
@@ -203,6 +304,15 @@ test("auth and state API: register, login, save state, read state", async (t) =>
   assert.equal(read.body.state.goals[0].importance, 5);
   assert.deepEqual(read.body.state.notes[0].associatedGoalIds, [customGoal.id]);
   assert.equal(read.body.state.plans[0].goalId, customGoal.id);
+  assert.equal(read.body.state.plans[0].milestoneId, milestone.id);
   assert.equal(read.body.state.reviewReminders[0].goalId, customGoal.id);
   assert.deepEqual(read.body.state.reflections[0].goalFocusIds, [customGoal.id]);
+  assert.equal(read.body.state.knowledgePoints[0].masteryScore, 32);
+  assert.equal(read.body.state.knowledgePoints[0].systemMastery, "初学");
+  assert.equal(read.body.state.milestones[0].title, milestone.title);
+  assert.equal(read.body.state.questions[0].type, "简答题");
+  assert.equal(read.body.state.answerAttempts[0].score, 45);
+  assert.equal(read.body.state.mistakes[0].status, "待复习");
+  assert.equal(read.body.state.recommendations[0].reasons.length, 3);
+  assert.equal(read.body.state.studyEvents[0].type, "answered_question");
 });

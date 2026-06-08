@@ -1,13 +1,19 @@
 import type {
+  AnswerAttempt,
   AppState,
   Goal,
   GoalImportance,
   GoalStatus,
   Importance,
   KnowledgePoint,
+  Milestone,
+  Mistake,
   Mastery,
   Note,
+  Question,
+  Recommendation,
   ReviewReminder,
+  StudyEvent,
   StudyPlan,
   Track,
 } from "../types";
@@ -142,6 +148,14 @@ export const masteryWeight: Record<Mastery, number> = {
   可讲解: 4,
 };
 
+export const masteryBaseScore: Record<Mastery, number> = {
+  未学: 5,
+  初学: 25,
+  理解: 55,
+  熟练: 78,
+  可讲解: 92,
+};
+
 export const reviewIntervals = [1, 3, 7, 14, 30];
 
 export function uid(prefix: string) {
@@ -156,6 +170,29 @@ export function addDaysIso(baseIso: string, days: number) {
   const date = new Date(`${baseIso}T00:00:00`);
   date.setDate(date.getDate() + days);
   return date.toISOString().slice(0, 10);
+}
+
+export function clampScore(score: number) {
+  return Math.min(100, Math.max(0, Math.round(score)));
+}
+
+export function masteryFromScore(score: number): Mastery {
+  const normalized = clampScore(score);
+  if (normalized < 20) return "未学";
+  if (normalized < 40) return "初学";
+  if (normalized < 65) return "理解";
+  if (normalized < 85) return "熟练";
+  return "可讲解";
+}
+
+function asMastery(value: unknown, fallback: Mastery = "初学"): Mastery {
+  return value === "未学" ||
+    value === "初学" ||
+    value === "理解" ||
+    value === "熟练" ||
+    value === "可讲解"
+    ? value
+    : fallback;
 }
 
 function daysUntil(targetIso?: string, baseIso = todayIso()) {
@@ -266,6 +303,205 @@ export function normalizeGoal(goal: Partial<Goal>): Goal {
   };
 }
 
+function normalizeKnowledgePoint(point: Partial<KnowledgePoint>): KnowledgePoint {
+  const manualMastery = asMastery(point.mastery, "初学");
+  const score =
+    typeof point.masteryScore === "number" && Number.isFinite(point.masteryScore)
+      ? clampScore(point.masteryScore)
+      : masteryBaseScore[manualMastery];
+  const now = todayIso();
+
+  return {
+    id: point.id || uid("kp"),
+    name: String(point.name || "未命名知识点").trim(),
+    noteIds: Array.isArray(point.noteIds) ? point.noteIds : [],
+    goalIds: Array.isArray(point.goalIds) ? point.goalIds : [],
+    tracks:
+      Array.isArray(point.tracks) && point.tracks.length
+        ? point.tracks.map((track) => asTrack(track))
+        : ["shared"],
+    mastery: manualMastery,
+    masteryScore: score,
+    evidenceCount:
+      typeof point.evidenceCount === "number" && Number.isFinite(point.evidenceCount)
+        ? Math.max(0, Math.round(point.evidenceCount))
+        : 0,
+    systemMastery: masteryFromScore(score),
+    lastTestScore:
+      typeof point.lastTestScore === "number" && Number.isFinite(point.lastTestScore)
+        ? clampScore(point.lastTestScore)
+        : undefined,
+    lastReviewedAt: point.lastReviewedAt,
+    repeatedMistakeCount:
+      typeof point.repeatedMistakeCount === "number" && Number.isFinite(point.repeatedMistakeCount)
+        ? Math.max(0, Math.round(point.repeatedMistakeCount))
+        : 0,
+    reviewPriority:
+      point.reviewPriority === "高" || point.reviewPriority === "中" || point.reviewPriority === "低"
+        ? point.reviewPriority
+        : "中",
+    reason: String(point.reason || ""),
+    updatedAt: point.updatedAt || now,
+  };
+}
+
+function normalizeMilestone(milestone: Partial<Milestone>): Milestone {
+  const now = todayIso();
+  const status =
+    milestone.status === "未开始" ||
+    milestone.status === "进行中" ||
+    milestone.status === "完成" ||
+    milestone.status === "延期"
+      ? milestone.status
+      : "未开始";
+
+  return {
+    id: milestone.id || uid("milestone"),
+    goalId: milestone.goalId || "",
+    title: String(milestone.title || "未命名里程碑").trim(),
+    description: String(milestone.description || "").trim(),
+    deadline: milestone.deadline || addDaysIso(now, 14),
+    status,
+    progress:
+      typeof milestone.progress === "number" && Number.isFinite(milestone.progress)
+        ? clampScore(milestone.progress)
+        : status === "完成"
+          ? 100
+          : 0,
+    createdAt: milestone.createdAt || now,
+    updatedAt: milestone.updatedAt || milestone.createdAt || now,
+  };
+}
+
+function normalizeQuestion(question: Partial<Question>): Question {
+  const difficulty =
+    typeof question.difficulty === "number" && Number.isFinite(question.difficulty)
+      ? (Math.min(5, Math.max(1, Math.round(question.difficulty))) as Question["difficulty"])
+      : 3;
+  const type =
+    question.type === "选择题" ||
+    question.type === "简答题" ||
+    question.type === "面试题" ||
+    question.type === "费曼讲解题"
+      ? question.type
+      : "简答题";
+  const source =
+    question.source === "AI生成" ||
+    question.source === "手动创建" ||
+    question.source === "错题转化"
+      ? question.source
+      : "手动创建";
+
+  return {
+    id: question.id || uid("question"),
+    goalId: question.goalId,
+    noteId: question.noteId,
+    knowledgePointIds: Array.isArray(question.knowledgePointIds)
+      ? question.knowledgePointIds
+      : [],
+    type,
+    question: String(question.question || "未填写题干").trim(),
+    answer: String(question.answer || "").trim(),
+    difficulty,
+    source,
+    createdAt: question.createdAt || todayIso(),
+  };
+}
+
+function normalizeAttempt(attempt: Partial<AnswerAttempt>): AnswerAttempt {
+  return {
+    id: attempt.id || uid("attempt"),
+    questionId: attempt.questionId || "",
+    score:
+      typeof attempt.score === "number" && Number.isFinite(attempt.score)
+        ? clampScore(attempt.score)
+        : 0,
+    answerText: String(attempt.answerText || "").trim(),
+    feedback: String(attempt.feedback || "").trim(),
+    createdAt: attempt.createdAt || todayIso(),
+  };
+}
+
+function normalizeMistake(mistake: Partial<Mistake>): Mistake {
+  const now = todayIso();
+  return {
+    id: mistake.id || uid("mistake"),
+    questionId: mistake.questionId || "",
+    goalId: mistake.goalId,
+    noteId: mistake.noteId,
+    knowledgePointIds: Array.isArray(mistake.knowledgePointIds) ? mistake.knowledgePointIds : [],
+    title: String(mistake.title || "未命名错题").trim(),
+    reason: String(mistake.reason || "").trim(),
+    repeatedCount:
+      typeof mistake.repeatedCount === "number" && Number.isFinite(mistake.repeatedCount)
+        ? Math.max(1, Math.round(mistake.repeatedCount))
+        : 1,
+    status: mistake.status === "已复习" ? "已复习" : "待复习",
+    createdAt: mistake.createdAt || now,
+    updatedAt: mistake.updatedAt || mistake.createdAt || now,
+  };
+}
+
+function normalizeRecommendation(recommendation: Partial<Recommendation>): Recommendation {
+  return {
+    id: recommendation.id || uid("rec"),
+    title: String(recommendation.title || "学习建议").trim(),
+    actionType:
+      recommendation.actionType === "复习" ||
+      recommendation.actionType === "做题" ||
+      recommendation.actionType === "写笔记" ||
+      recommendation.actionType === "推进计划" ||
+      recommendation.actionType === "复盘" ||
+      recommendation.actionType === "项目实践"
+        ? recommendation.actionType
+        : "复习",
+    goalId: recommendation.goalId,
+    noteId: recommendation.noteId,
+    knowledgePointId: recommendation.knowledgePointId,
+    priorityScore:
+      typeof recommendation.priorityScore === "number" &&
+      Number.isFinite(recommendation.priorityScore)
+        ? Math.max(0, Math.round(recommendation.priorityScore))
+        : 0,
+    reasons: Array.isArray(recommendation.reasons) ? recommendation.reasons : [],
+    status:
+      recommendation.status === "已接受" ||
+      recommendation.status === "已完成" ||
+      recommendation.status === "忽略"
+        ? recommendation.status
+        : "待处理",
+    createdAt: recommendation.createdAt || todayIso(),
+  };
+}
+
+function normalizeStudyEvent(event: Partial<StudyEvent>): StudyEvent {
+  const type =
+    event.type === "completed_plan" ||
+    event.type === "completed_review" ||
+    event.type === "answered_question" ||
+    event.type === "created_reflection" ||
+    event.type === "updated_goal" ||
+    event.type === "created_milestone" ||
+    event.type === "created_question" ||
+    event.type === "created_mistake"
+      ? event.type
+      : "created_note";
+
+  return {
+    id: event.id || uid("event"),
+    type,
+    goalId: event.goalId,
+    noteId: event.noteId,
+    knowledgePointId: event.knowledgePointId,
+    score:
+      typeof event.score === "number" && Number.isFinite(event.score)
+        ? Math.round(event.score)
+        : undefined,
+    title: String(event.title || "学习事件").trim(),
+    createdAt: event.createdAt || todayIso(),
+  };
+}
+
 export function normalizeState(state: Partial<AppState>): AppState {
   const goals = (Array.isArray(state.goals) ? state.goals : []).map(normalizeGoal);
   const notes = (Array.isArray(state.notes) ? state.notes : []).map((note) => ({
@@ -280,16 +516,11 @@ export function normalizeState(state: Partial<AppState>): AppState {
   return {
     notes,
     knowledgePoints: (Array.isArray(state.knowledgePoints) ? state.knowledgePoints : []).map(
-      (point) => ({
-        ...point,
-        noteIds: Array.isArray(point.noteIds) ? point.noteIds : [],
-        goalIds: Array.isArray(point.goalIds) ? point.goalIds : [],
-        tracks:
-          Array.isArray(point.tracks) && point.tracks.length
-            ? point.tracks.map((track) => asTrack(track))
-            : ["shared"],
-      }),
-    ) as KnowledgePoint[],
+      normalizeKnowledgePoint,
+    ),
+    milestones: (Array.isArray(state.milestones) ? state.milestones : []).map(
+      normalizeMilestone,
+    ),
     plans: (Array.isArray(state.plans) ? state.plans : []).map((plan) => ({
       ...plan,
       track: asTrack(plan.track),
@@ -304,8 +535,21 @@ export function normalizeState(state: Partial<AppState>): AppState {
       ...project,
       track: asTrack(project.track),
       techStack: Array.isArray(project.techStack) ? project.techStack : [],
+      goalIds: Array.isArray(project.goalIds) ? project.goalIds : [],
+      knowledgePointIds: Array.isArray(project.knowledgePointIds) ? project.knowledgePointIds : [],
       linkedNoteIds: Array.isArray(project.linkedNoteIds) ? project.linkedNoteIds : [],
     })) as AppState["projects"],
+    questions: (Array.isArray(state.questions) ? state.questions : []).map(normalizeQuestion),
+    answerAttempts: (Array.isArray(state.answerAttempts) ? state.answerAttempts : []).map(
+      normalizeAttempt,
+    ),
+    mistakes: (Array.isArray(state.mistakes) ? state.mistakes : []).map(normalizeMistake),
+    recommendations: (
+      Array.isArray(state.recommendations) ? state.recommendations : []
+    ).map(normalizeRecommendation),
+    studyEvents: (Array.isArray(state.studyEvents) ? state.studyEvents : []).map(
+      normalizeStudyEvent,
+    ),
   };
 }
 
@@ -327,13 +571,58 @@ export interface GoalInsight {
   reasons: string[];
   noteCount: number;
   knowledgeCount: number;
+  milestoneCount: number;
+  overdueMilestoneCount: number;
   dueReviewCount: number;
+  mistakeCount: number;
   activePlanCount: number;
   completedPlanCount: number;
   planCompletionRate: number;
+  systemProgress: number;
+  progressGap: number;
   averageMastery: string;
+  averageMasteryScore: number;
   risk: string;
   daysLeft: number | null;
+}
+
+export function estimateGoalProgress(state: AppState, goalId: string) {
+  const normalized = normalizeState(state);
+  const relatedMilestones = normalized.milestones.filter((milestone) => milestone.goalId === goalId);
+  const relatedPlans = normalized.plans.filter((plan) => plan.goalId === goalId);
+  const relatedKnowledge = normalized.knowledgePoints.filter((point) =>
+    point.goalIds.includes(goalId),
+  );
+
+  const milestoneProgress =
+    relatedMilestones.length === 0
+      ? null
+      : relatedMilestones.reduce((sum, milestone) => sum + milestone.progress, 0) /
+        relatedMilestones.length;
+  const planProgress =
+    relatedPlans.length === 0
+      ? null
+      : (relatedPlans.filter((plan) => plan.status === "完成").length / relatedPlans.length) * 100;
+  const masteryProgress =
+    relatedKnowledge.length === 0
+      ? null
+      : relatedKnowledge.reduce((sum, point) => sum + point.masteryScore, 0) /
+        relatedKnowledge.length;
+
+  const weightedParts = [
+    milestoneProgress === null ? null : { value: milestoneProgress, weight: 0.4 },
+    planProgress === null ? null : { value: planProgress, weight: 0.3 },
+    masteryProgress === null ? null : { value: masteryProgress, weight: 0.3 },
+  ].filter(Boolean) as Array<{ value: number; weight: number }>;
+
+  if (weightedParts.length === 0) {
+    return normalized.goals.find((goal) => goal.id === goalId)?.progress ?? 0;
+  }
+
+  const totalWeight = weightedParts.reduce((sum, item) => sum + item.weight, 0);
+  return clampScore(
+    weightedParts.reduce((sum, item) => sum + item.value * item.weight, 0) / totalWeight,
+  );
 }
 
 export function buildGoalInsights(state: AppState, baseIso = todayIso()): GoalInsight[] {
@@ -348,9 +637,32 @@ export function buildGoalInsights(state: AppState, baseIso = todayIso()): GoalIn
       const relatedKnowledge = normalized.knowledgePoints.filter((point) =>
         point.goalIds.includes(goal.id),
       );
+      const relatedKnowledgeIds = new Set(relatedKnowledge.map((point) => point.id));
+      const relatedMilestones = normalized.milestones.filter(
+        (milestone) => milestone.goalId === goal.id,
+      );
       const relatedPlans = normalized.plans.filter((plan) => plan.goalId === goal.id);
       const activePlans = relatedPlans.filter((plan) => plan.status !== "完成");
       const completedPlans = relatedPlans.filter((plan) => plan.status === "完成");
+      const overdueMilestones = relatedMilestones.filter(
+        (milestone) => milestone.status !== "完成" && milestone.deadline < baseIso,
+      );
+      const relatedMistakes = normalized.mistakes.filter((mistake) => {
+        if (mistake.goalId === goal.id) return true;
+        if (mistake.knowledgePointIds.some((id) => relatedKnowledgeIds.has(id))) return true;
+        const note = normalized.notes.find((item) => item.id === mistake.noteId);
+        return note?.associatedGoalIds.includes(goal.id) ?? false;
+      });
+      const relatedQuestions = normalized.questions.filter((question) => {
+        if (question.goalId === goal.id) return true;
+        if (question.knowledgePointIds.some((id) => relatedKnowledgeIds.has(id))) return true;
+        const note = normalized.notes.find((item) => item.id === question.noteId);
+        return note?.associatedGoalIds.includes(goal.id) ?? false;
+      });
+      const relatedQuestionIds = new Set(relatedQuestions.map((question) => question.id));
+      const relatedAttempts = normalized.answerAttempts.filter((attempt) =>
+        relatedQuestionIds.has(attempt.questionId),
+      );
       const relatedDue = due.filter((reminder) => {
         if (reminder.goalId === goal.id) return true;
         const note = normalized.notes.find((item) => item.id === reminder.noteId);
@@ -359,6 +671,7 @@ export function buildGoalInsights(state: AppState, baseIso = todayIso()): GoalIn
       const lowMasteryNotes = relatedNotes.filter(
         (note) => note.mastery === "未学" || note.mastery === "初学",
       );
+      const lowMasteryKnowledge = relatedKnowledge.filter((point) => point.masteryScore < 40);
       const daysLeft = daysUntil(goal.deadline, baseIso);
       const reasons: string[] = [];
 
@@ -381,16 +694,39 @@ export function buildGoalInsights(state: AppState, baseIso = todayIso()): GoalIn
       const weakKnowledgeScore = Math.min(20, lowMasteryNotes.length * 6);
       if (weakKnowledgeScore > 0) reasons.push(`${lowMasteryNotes.length} 篇低掌握笔记`);
 
+      const lowKnowledgeScore = Math.min(25, lowMasteryKnowledge.length * 8);
+      if (lowMasteryKnowledge.length > 0) {
+        reasons.push(`${lowMasteryKnowledge.length} 个低掌握知识点`);
+      }
+
       const overduePlanCount = activePlans.filter((plan) => plan.dueDate < baseIso).length;
       const overduePlanScore = Math.min(20, overduePlanCount * 10);
       if (overduePlanCount > 0) reasons.push(`${overduePlanCount} 项计划延期`);
 
+      const overdueMilestoneScore = Math.min(25, overdueMilestones.length * 12);
+      if (overdueMilestones.length > 0) reasons.push(`${overdueMilestones.length} 个里程碑延期`);
+
       const dueReviewScore = Math.min(20, relatedDue.length * 5);
       if (relatedDue.length > 0) reasons.push(`${relatedDue.length} 个到期复习`);
+
+      const repeatedMistakeCount = relatedMistakes.filter((mistake) => mistake.repeatedCount > 1).length;
+      const mistakeScore = Math.min(
+        25,
+        relatedMistakes.length * 6 + repeatedMistakeCount * 5,
+      );
+      if (relatedMistakes.length > 0) reasons.push(`${relatedMistakes.length} 道错题待复盘`);
+
+      const latestTestScore = relatedAttempts.sort((a, b) =>
+        b.createdAt.localeCompare(a.createdAt),
+      )[0]?.score;
+      const lowTestScore = latestTestScore !== undefined && latestTestScore < 60 ? 12 : 0;
+      if (lowTestScore > 0) reasons.push(`最近自测 ${latestTestScore} 分`);
 
       const activityDates = [
         ...relatedNotes.map((note) => note.updatedAt || note.createdAt),
         ...relatedPlans.map((plan) => plan.createdAt || plan.dueDate),
+        ...relatedMilestones.map((milestone) => milestone.updatedAt || milestone.createdAt),
+        ...relatedAttempts.map((attempt) => attempt.createdAt),
       ].filter(Boolean);
       const latestActivity = activityDates.sort().at(-1);
       const inactiveDays = daysSince(latestActivity, baseIso);
@@ -404,8 +740,12 @@ export function buildGoalInsights(state: AppState, baseIso = todayIso()): GoalIn
         goal.importance * 20 +
         deadlineUrgency +
         weakKnowledgeScore +
+        lowKnowledgeScore +
         overduePlanScore +
+        overdueMilestoneScore +
         dueReviewScore +
+        mistakeScore +
+        lowTestScore +
         inactivityScore;
 
       const planCompletionRate =
@@ -413,36 +753,43 @@ export function buildGoalInsights(state: AppState, baseIso = todayIso()): GoalIn
           ? 0
           : Math.round((completedPlans.length / relatedPlans.length) * 100);
 
-      const masteryAverage =
-        relatedNotes.length === 0
-          ? null
-          : relatedNotes.reduce((sum, note) => sum + masteryWeight[note.mastery], 0) /
-            relatedNotes.length;
+      const averageMasteryScore =
+        relatedKnowledge.length === 0
+          ? relatedNotes.length === 0
+            ? 0
+            : clampScore(
+                relatedNotes.reduce((sum, note) => sum + masteryBaseScore[note.mastery], 0) /
+                  relatedNotes.length,
+              )
+          : clampScore(
+              relatedKnowledge.reduce((sum, point) => sum + point.masteryScore, 0) /
+                relatedKnowledge.length,
+            );
       const averageMastery =
-        masteryAverage === null
+        relatedKnowledge.length === 0 && relatedNotes.length === 0
           ? "未积累"
-          : masteryAverage < 1
-            ? "未学"
-            : masteryAverage < 2
-              ? "初学"
-              : masteryAverage < 3
-                ? "理解"
-                : masteryAverage < 4
-                  ? "熟练"
-                  : "可讲解";
+          : masteryFromScore(averageMasteryScore);
+      const systemProgress = estimateGoalProgress(normalized, goal.id);
+      const progressGap = Math.abs(goal.progress - systemProgress);
 
       const risk =
         relatedNotes.length === 0
           ? "还没有关联笔记，目标缺少学习记录。"
-          : relatedDue.length > 0
-            ? "存在到期复习，需要先处理记忆回路。"
-            : relatedPlans.length > 0 && planCompletionRate < 50
-              ? "计划完成率偏低，建议收敛任务数量。"
-              : lowMasteryNotes.length > 0
-                ? "低掌握笔记偏多，建议安排输出型复习。"
-                : goal.progress < 30 && goal.importance >= 4
-                  ? "核心目标进度偏低，需要拆出本周动作。"
-                  : "节奏正常，继续保持复盘。";
+          : overdueMilestones.length > 0
+            ? "里程碑已经延期，建议先把阶段目标重新拆小。"
+            : relatedMistakes.length > 0
+              ? "错题仍未复盘，会拉低真实掌握度。"
+              : relatedDue.length > 0
+                ? "存在到期复习，需要先处理记忆回路。"
+                : relatedPlans.length > 0 && planCompletionRate < 50
+                  ? "计划完成率偏低，建议收敛任务数量。"
+                  : lowMasteryKnowledge.length > 0 || lowMasteryNotes.length > 0
+                    ? "低掌握内容偏多，建议安排输出型自测。"
+                    : progressGap >= 25
+                      ? `手动进度 ${goal.progress}% 与系统估算 ${systemProgress}% 差距较大，建议校准预期。`
+                      : goal.progress < 30 && goal.importance >= 4
+                        ? "核心目标进度偏低，需要拆出本周动作。"
+                        : "节奏正常，继续保持复盘。";
 
       return {
         goal: { ...goal, priorityScore },
@@ -450,11 +797,17 @@ export function buildGoalInsights(state: AppState, baseIso = todayIso()): GoalIn
         reasons: cleanUnique(reasons).slice(0, 4),
         noteCount: relatedNotes.length,
         knowledgeCount: relatedKnowledge.length,
+        milestoneCount: relatedMilestones.length,
+        overdueMilestoneCount: overdueMilestones.length,
         dueReviewCount: relatedDue.length,
+        mistakeCount: relatedMistakes.length,
         activePlanCount: activePlans.length,
         completedPlanCount: completedPlans.length,
         planCompletionRate,
+        systemProgress,
+        progressGap,
         averageMastery,
+        averageMasteryScore,
         risk,
         daysLeft,
       };
@@ -523,7 +876,8 @@ export function upsertKnowledgeFromNote(
     );
     const priority = inferReviewPriority(note);
     if (index >= 0) {
-      const point = updated[index];
+      const point = normalizeKnowledgePoint(updated[index]);
+      const nextScore = Math.min(point.masteryScore, masteryBaseScore[note.mastery]);
       updated[index] = {
         ...point,
         noteIds: cleanUnique([...point.noteIds, note.id]),
@@ -531,6 +885,8 @@ export function upsertKnowledgeFromNote(
         tracks: cleanUnique([...point.tracks, ...note.tracks]) as Track[],
         mastery:
           masteryWeight[note.mastery] < masteryWeight[point.mastery] ? note.mastery : point.mastery,
+        masteryScore: nextScore,
+        systemMastery: masteryFromScore(nextScore),
         reviewPriority: priority === "高" ? "高" : point.reviewPriority,
         reason: buildKnowledgeReason(note, priority),
         updatedAt: now,
@@ -545,6 +901,10 @@ export function upsertKnowledgeFromNote(
       goalIds: inferredGoalIds,
       tracks: note.tracks,
       mastery: note.mastery,
+      masteryScore: masteryBaseScore[note.mastery],
+      evidenceCount: 0,
+      systemMastery: masteryFromScore(masteryBaseScore[note.mastery]),
+      repeatedMistakeCount: 0,
       reviewPriority: priority,
       reason: buildKnowledgeReason(note, priority),
       updatedAt: now,
@@ -589,19 +949,450 @@ export function nextIntervalByScore(score: number, previousInterval: number) {
   return index >= 0 ? reviewIntervals[index] : 30;
 }
 
+export function createStudyEvent(
+  event: Omit<StudyEvent, "id" | "createdAt"> & { createdAt?: string },
+): StudyEvent {
+  return {
+    id: uid("event"),
+    type: event.type,
+    goalId: event.goalId,
+    noteId: event.noteId,
+    knowledgePointId: event.knowledgePointId,
+    score: event.score,
+    title: event.title,
+    createdAt: event.createdAt || todayIso(),
+  };
+}
+
+export function reviewEvidenceDelta(score: number, mode: "复习" | "自测" | "费曼讲解") {
+  let delta = 5;
+  if (mode === "自测" && score >= 4) delta += 10;
+  if (mode === "费曼讲解") delta += 15;
+  if (score <= 2) delta -= 15;
+  return delta;
+}
+
+export function applyKnowledgeEvidence(
+  knowledgePoints: KnowledgePoint[],
+  evidence: {
+    knowledgePointIds?: string[];
+    noteId?: string;
+    goalId?: string;
+    conceptName?: string;
+    delta: number;
+    score?: number;
+    reviewedAt?: string;
+    repeatedMistake?: boolean;
+  },
+) {
+  const ids = new Set(evidence.knowledgePointIds || []);
+  const conceptName = evidence.conceptName?.trim().toLowerCase();
+
+  return knowledgePoints.map((rawPoint) => {
+    const point = normalizeKnowledgePoint(rawPoint);
+    const matched =
+      ids.has(point.id) ||
+      (evidence.noteId ? point.noteIds.includes(evidence.noteId) : false) ||
+      (evidence.goalId ? point.goalIds.includes(evidence.goalId) : false) ||
+      (conceptName ? point.name.toLowerCase() === conceptName : false);
+
+    if (!matched) return point;
+
+    const nextScore = clampScore(point.masteryScore + evidence.delta);
+    const repeatedMistakeCount =
+      (point.repeatedMistakeCount || 0) + (evidence.repeatedMistake ? 1 : 0);
+    const reasonParts = [
+      point.reason,
+      evidence.score !== undefined ? `最近自测 ${evidence.score} 分` : "",
+      evidence.repeatedMistake ? "重复错题已扣分" : "",
+    ].filter(Boolean);
+
+    return {
+      ...point,
+      masteryScore: nextScore,
+      systemMastery: masteryFromScore(nextScore),
+      evidenceCount: point.evidenceCount + 1,
+      lastTestScore: evidence.score ?? point.lastTestScore,
+      lastReviewedAt: evidence.reviewedAt ?? point.lastReviewedAt,
+      repeatedMistakeCount,
+      reviewPriority: nextScore < 45 || evidence.repeatedMistake ? "高" : point.reviewPriority,
+      reason: cleanUnique(reasonParts).slice(-3).join("；"),
+      updatedAt: evidence.reviewedAt || todayIso(),
+    };
+  });
+}
+
+export function generateQuestionsFromNote(
+  note: Note,
+  knowledgePoints: KnowledgePoint[],
+  count = 5,
+): Question[] {
+  const concepts = extractConcepts(note);
+  const linkedPointIds = knowledgePoints
+    .filter(
+      (point) =>
+        point.noteIds.includes(note.id) ||
+        concepts.some((concept) => concept.toLowerCase() === point.name.toLowerCase()),
+    )
+    .map((point) => point.id);
+  const basePrompts = cleanUnique([
+    ...note.commonQuestions,
+    ...concepts.map((concept) => `用自己的话解释「${concept}」，并说明它解决什么问题。`),
+    `请把「${note.title}」讲给一个没有背景的人听，并举一个例子。`,
+  ]);
+  const prompts = basePrompts.length > 0 ? basePrompts : [`请概括「${note.title}」的核心观点。`];
+  const types: Question["type"][] = ["简答题", "面试题", "费曼讲解题", "简答题", "面试题"];
+
+  return Array.from({ length: Math.max(1, count) }, (_, index) => {
+    const prompt = prompts[index % prompts.length];
+    const difficulty = Math.min(5, Math.max(1, 2 + (index % 4))) as Question["difficulty"];
+    return {
+      id: uid("question"),
+      goalId: note.associatedGoalIds[0],
+      noteId: note.id,
+      knowledgePointIds: linkedPointIds,
+      type: types[index % types.length],
+      question: prompt,
+      answer:
+        note.summary ||
+        note.myUnderstanding ||
+        note.content.slice(0, 160) ||
+        "需要结合笔记内容，用自己的话说明核心概念、原因和例子。",
+      difficulty,
+      source: "AI生成",
+      createdAt: todayIso(),
+    };
+  });
+}
+
+export function buildAttemptFeedback(question: Question, score: number, answerText: string) {
+  const normalizedScore = clampScore(score);
+  const answerLength = answerText.trim().length;
+  if (normalizedScore >= 85) {
+    return `掌握较稳。你已经能覆盖「${question.type}」的核心要求，可以安排下一轮间隔复习。`;
+  }
+  if (normalizedScore >= 70) {
+    return "基本正确，但建议补充关键原因、边界条件或例子，避免只背结论。";
+  }
+  if (answerLength < 20) {
+    return "回答过短，证据不足。建议补充定义、原因、例子和容易混淆点。";
+  }
+  return "本题未达标，建议回到关联笔记重学，并把错误原因写进错题本。";
+}
+
+export function updateKnowledgeAfterQuestionAttempt(
+  knowledgePoints: KnowledgePoint[],
+  questions: Question[],
+  previousAttempts: AnswerAttempt[],
+  question: Question,
+  attempt: AnswerAttempt,
+  repeatedMistake: boolean,
+) {
+  const relatedPointIds = new Set(question.knowledgePointIds);
+  const hadRecentLowScore = previousAttempts
+    .filter((previous) => {
+      const previousQuestion = questions.find((item) => item.id === previous.questionId);
+      if (!previousQuestion) return false;
+      return previousQuestion.knowledgePointIds.some((id) => relatedPointIds.has(id));
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 1)
+    .some((previous) => previous.score < 60);
+
+  let delta = 0;
+  if (attempt.score >= 85) delta += 10;
+  else if (attempt.score >= 70) delta += 5;
+  else if (attempt.score < 60) delta -= 15;
+  if (attempt.score < 60 && hadRecentLowScore) delta -= 15;
+  if (repeatedMistake) delta -= 20;
+
+  return applyKnowledgeEvidence(knowledgePoints, {
+    knowledgePointIds: question.knowledgePointIds,
+    noteId: question.noteId,
+    goalId: question.goalId,
+    delta,
+    score: attempt.score,
+    reviewedAt: attempt.createdAt,
+    repeatedMistake,
+  });
+}
+
+export function upsertMistakeFromAttempt(
+  mistakes: Mistake[],
+  question: Question,
+  attempt: AnswerAttempt,
+) {
+  if (attempt.score >= 60) {
+    return { mistakes, mistake: null, repeatedMistake: false };
+  }
+
+  const existingIndex = mistakes.findIndex((mistake) => mistake.questionId === question.id);
+  if (existingIndex >= 0) {
+    const existing = normalizeMistake(mistakes[existingIndex]);
+    const updated: Mistake = {
+      ...existing,
+      reason: attempt.feedback || existing.reason,
+      repeatedCount: existing.repeatedCount + 1,
+      status: "待复习",
+      updatedAt: attempt.createdAt,
+    };
+    return {
+      mistakes: mistakes.map((mistake, index) => (index === existingIndex ? updated : mistake)),
+      mistake: updated,
+      repeatedMistake: true,
+    };
+  }
+
+  const mistake: Mistake = {
+    id: uid("mistake"),
+    questionId: question.id,
+    goalId: question.goalId,
+    noteId: question.noteId,
+    knowledgePointIds: question.knowledgePointIds,
+    title: question.question,
+    reason: attempt.feedback,
+    repeatedCount: 1,
+    status: "待复习",
+    createdAt: attempt.createdAt,
+    updatedAt: attempt.createdAt,
+  };
+
+  return { mistakes: [mistake, ...mistakes], mistake, repeatedMistake: false };
+}
+
+export function buildRecommendations(state: AppState, baseIso = todayIso()): Recommendation[] {
+  const normalized = normalizeState(state);
+  const previous = new Map(normalized.recommendations.map((item) => [item.id, item]));
+  const recommendations: Recommendation[] = [];
+  const makeRecommendation = (
+    recommendation: Omit<Recommendation, "status" | "createdAt"> & { createdAt?: string },
+  ) => {
+    const existing = previous.get(recommendation.id);
+    const status = existing?.status || "待处理";
+    if (status === "忽略" || status === "已完成") return;
+    recommendations.push({
+      ...recommendation,
+      status,
+      createdAt: existing?.createdAt || recommendation.createdAt || baseIso,
+    });
+  };
+
+  dueReminders(normalized.reviewReminders, baseIso)
+    .slice(0, 8)
+    .forEach((reminder) => {
+      const note = normalized.notes.find((item) => item.id === reminder.noteId);
+      const goal = normalized.goals.find((item) => item.id === (reminder.goalId || note?.associatedGoalIds[0]));
+      makeRecommendation({
+        id: `rec_review_${reminder.id}`,
+        title: `复习：${reminder.conceptName || note?.title || "到期内容"}`,
+        actionType: "复习",
+        goalId: goal?.id,
+        noteId: note?.id,
+        priorityScore: 70 + (goal?.importance || 3) * 8,
+        reasons: [
+          `复习提醒已到期：${reminder.dueAt}`,
+          goal ? `关联目标「${goal.title}」，重要程度 ${goal.importance}` : "暂未关联目标",
+          reminder.lastScore !== undefined ? `上次复习得分 ${reminder.lastScore}` : "需要补充学习证据",
+        ],
+      });
+    });
+
+  normalized.knowledgePoints
+    .filter((point) => point.masteryScore < 50)
+    .sort((a, b) => a.masteryScore - b.masteryScore)
+    .slice(0, 8)
+    .forEach((point) => {
+      const goal = normalized.goals.find((item) => point.goalIds.includes(item.id));
+      makeRecommendation({
+        id: `rec_kp_${point.id}`,
+        title: `专项训练：${point.name}`,
+        actionType: "做题",
+        goalId: goal?.id,
+        knowledgePointId: point.id,
+        priorityScore: 60 + (goal?.importance || 3) * 8 + (50 - point.masteryScore),
+        reasons: [
+          `系统掌握分 ${point.masteryScore}/100，建议为「${point.systemMastery || masteryFromScore(point.masteryScore)}」`,
+          goal ? `关联目标「${goal.title}」，重要程度 ${goal.importance}` : "暂未关联目标",
+          point.lastTestScore !== undefined ? `最近自测 ${point.lastTestScore} 分` : "尚缺少自测证据",
+          point.repeatedMistakeCount ? `重复错题 ${point.repeatedMistakeCount} 次` : "",
+        ].filter(Boolean),
+      });
+    });
+
+  normalized.mistakes
+    .filter((mistake) => mistake.status === "待复习")
+    .slice(0, 8)
+    .forEach((mistake) => {
+      const goal = normalized.goals.find((item) => item.id === mistake.goalId);
+      makeRecommendation({
+        id: `rec_mistake_${mistake.id}`,
+        title: `复盘错题：${mistake.title}`,
+        actionType: "复盘",
+        goalId: mistake.goalId,
+        noteId: mistake.noteId,
+        priorityScore: 75 + mistake.repeatedCount * 10 + (goal?.importance || 3) * 5,
+        reasons: [
+          `错题重复 ${mistake.repeatedCount} 次`,
+          goal ? `关联目标「${goal.title}」` : "需要补全目标关联",
+          mistake.reason || "需要分析错误原因",
+        ],
+      });
+    });
+
+  normalized.milestones
+    .filter((milestone) => milestone.status !== "完成" && milestone.deadline < baseIso)
+    .slice(0, 6)
+    .forEach((milestone) => {
+      const goal = normalized.goals.find((item) => item.id === milestone.goalId);
+      makeRecommendation({
+        id: `rec_milestone_${milestone.id}`,
+        title: `推进里程碑：${milestone.title}`,
+        actionType: "推进计划",
+        goalId: milestone.goalId,
+        priorityScore: 80 + (goal?.importance || 3) * 8,
+        reasons: [
+          `里程碑已延期，截止 ${milestone.deadline}`,
+          `当前进度 ${milestone.progress}%`,
+          goal ? `属于目标「${goal.title}」` : "未找到目标",
+        ],
+      });
+    });
+
+  buildGoalInsights(normalized, baseIso)
+    .filter((insight) => insight.progressGap >= 25)
+    .slice(0, 4)
+    .forEach((insight) => {
+      makeRecommendation({
+        id: `rec_goal_gap_${insight.goal.id}`,
+        title: `校准目标进度：${insight.goal.title}`,
+        actionType: "复盘",
+        goalId: insight.goal.id,
+        priorityScore: 65 + insight.progressGap,
+        reasons: [
+          `手动进度 ${insight.goal.progress}%`,
+          `系统估算 ${insight.systemProgress}%`,
+          "建议根据计划完成率、自测分和里程碑重新校准预期",
+        ],
+      });
+    });
+
+  return recommendations
+    .sort((a, b) => b.priorityScore - a.priorityScore)
+    .slice(0, 20);
+}
+
+export interface LearningAnalytics {
+  planCompletionRate: number;
+  overduePlanRate: number;
+  milestoneCompletionRate: number;
+  reviewCompletionRate: number;
+  averageTestScore: number;
+  lowMasteryKnowledgeCount: number;
+  repeatedMistakeRate: number;
+  stalledGoalCount: number;
+  weeklyEvidenceCount: number;
+}
+
+export function buildLearningAnalytics(state: AppState, baseIso = todayIso()): LearningAnalytics {
+  const normalized = normalizeState(state);
+  const activePlans = normalized.plans.filter((plan) => plan.status !== "完成");
+  const overduePlans = activePlans.filter((plan) => plan.dueDate < baseIso);
+  const completedReviews = normalized.reviewReminders.filter((reminder) => reminder.status === "已完成");
+  const completedMilestones = normalized.milestones.filter((milestone) => milestone.status === "完成");
+  const repeatedMistakes = normalized.mistakes.filter((mistake) => mistake.repeatedCount > 1);
+  const weekStart = getWeekStartIso(new Date(`${baseIso}T00:00:00`));
+  const stalledGoalCount = buildGoalInsights(normalized, baseIso).filter((insight) =>
+    insight.reasons.some((reason) => reason.includes("天未推进") || reason === "尚未推进"),
+  ).length;
+
+  return {
+    planCompletionRate: completionRate(normalized.plans),
+    overduePlanRate:
+      activePlans.length === 0 ? 0 : Math.round((overduePlans.length / activePlans.length) * 100),
+    milestoneCompletionRate:
+      normalized.milestones.length === 0
+        ? 0
+        : Math.round((completedMilestones.length / normalized.milestones.length) * 100),
+    reviewCompletionRate:
+      normalized.reviewReminders.length === 0
+        ? 0
+        : Math.round((completedReviews.length / normalized.reviewReminders.length) * 100),
+    averageTestScore:
+      normalized.answerAttempts.length === 0
+        ? 0
+        : clampScore(
+            normalized.answerAttempts.reduce((sum, attempt) => sum + attempt.score, 0) /
+              normalized.answerAttempts.length,
+          ),
+    lowMasteryKnowledgeCount: normalized.knowledgePoints.filter((point) => point.masteryScore < 40)
+      .length,
+    repeatedMistakeRate:
+      normalized.mistakes.length === 0
+        ? 0
+        : Math.round((repeatedMistakes.length / normalized.mistakes.length) * 100),
+    stalledGoalCount,
+    weeklyEvidenceCount: normalized.studyEvents.filter((event) => event.createdAt >= weekStart)
+      .length,
+  };
+}
+
 export function buildWeeklySummary(state: AppState) {
+  const normalized = normalizeState(state);
   const weekStart = getWeekStartIso();
-  const dueCount = dueReminders(state.reviewReminders).length;
-  const completedPlans = state.plans.filter((plan) => plan.status === "完成").length;
-  const activePlans = state.plans.filter((plan) => plan.status !== "完成").length;
-  const weakNotes = state.notes
+  const dueCount = dueReminders(normalized.reviewReminders).length;
+  const completedPlans = normalized.plans.filter((plan) => plan.status === "完成").length;
+  const activePlans = normalized.plans.filter((plan) => plan.status !== "完成").length;
+  const weakNotes = normalized.notes
     .filter((note) => note.mastery === "未学" || note.mastery === "初学")
     .slice(0, 4)
     .map((note) => note.title);
-  const sharedPoints = state.knowledgePoints.filter((point) =>
+  const sharedPoints = normalized.knowledgePoints.filter((point) =>
     point.tracks.includes("shared"),
   ).length;
-  const goalInsights = buildGoalInsights(state).slice(0, 3);
+  const goalInsights = buildGoalInsights(normalized).slice(0, 3);
+  const pendingMistakes = normalized.mistakes.filter((mistake) => mistake.status === "待复习");
+  const repeatedMistakes = pendingMistakes.filter((mistake) => mistake.repeatedCount > 1);
+  const overdueMilestones = normalized.milestones.filter(
+    (milestone) => milestone.status !== "完成" && milestone.deadline < todayIso(),
+  );
+  const completedMilestones = normalized.milestones.filter(
+    (milestone) => milestone.status === "完成" && milestone.updatedAt >= weekStart,
+  );
+  const weeklyAttempts = normalized.answerAttempts.filter((attempt) => attempt.createdAt >= weekStart);
+  const averageWeeklyScore =
+    weeklyAttempts.length === 0
+      ? 0
+      : clampScore(
+          weeklyAttempts.reduce((sum, attempt) => sum + attempt.score, 0) /
+            weeklyAttempts.length,
+        );
+  const lowScoreAttempts = weeklyAttempts.filter((attempt) => attempt.score < 60);
+  const weeklyEvents = normalized.studyEvents.filter((event) => event.createdAt >= weekStart);
+  const testedKnowledgePointIds = new Set<string>();
+  weeklyAttempts.forEach((attempt) => {
+    const question = normalized.questions.find((item) => item.id === attempt.questionId);
+    question?.knowledgePointIds.forEach((id) => testedKnowledgePointIds.add(id));
+  });
+  weeklyEvents.forEach((event) => {
+    if (event.knowledgePointId) testedKnowledgePointIds.add(event.knowledgePointId);
+  });
+  const masteryChangeLines = normalized.knowledgePoints
+    .filter(
+      (point) =>
+        testedKnowledgePointIds.has(point.id) ||
+        (point.updatedAt >= weekStart && point.evidenceCount > 0),
+    )
+    .sort((a, b) => a.masteryScore - b.masteryScore)
+    .slice(0, 5)
+    .map((point) => {
+      const direction =
+        point.lastTestScore !== undefined && point.lastTestScore < 60
+          ? "下降风险"
+          : point.masteryScore >= 70
+            ? "提升稳定"
+            : "仍需巩固";
+      return `${point.name}：${point.masteryScore}/100，系统建议 ${point.systemMastery || masteryFromScore(point.masteryScore)}，${direction}`;
+    });
   const goalLines = goalInsights.map((insight, index) => {
     const daysText =
       insight.daysLeft === null
@@ -614,9 +1405,29 @@ export function buildWeeklySummary(state: AppState) {
 
   return [
     `本周起始：${weekStart}`,
-    `目标 ${state.goals.length} 个，笔记 ${state.notes.length} 篇，知识点 ${state.knowledgePoints.length} 个，其中交叉知识点 ${sharedPoints} 个。`,
+    `目标 ${normalized.goals.length} 个，笔记 ${normalized.notes.length} 篇，知识点 ${normalized.knowledgePoints.length} 个，其中交叉知识点 ${sharedPoints} 个。`,
     `计划完成 ${completedPlans} 项，仍有 ${activePlans} 项需要推进。`,
     `当前到期复习 ${dueCount} 项。`,
+    overdueMilestones.length > 0
+      ? `里程碑风险：${overdueMilestones
+          .slice(0, 4)
+          .map((milestone) => `${milestone.title} 已延期，当前 ${milestone.progress}%`)
+          .join("；")}。`
+      : completedMilestones.length > 0
+        ? `里程碑进展：本周完成 ${completedMilestones.length} 个里程碑。`
+        : "里程碑进展：本周没有完成或延期的里程碑记录。",
+    weeklyAttempts.length > 0
+      ? `自测表现：本周完成 ${weeklyAttempts.length} 次自测，平均 ${averageWeeklyScore} 分，低于 60 分 ${lowScoreAttempts.length} 次。`
+      : "自测表现：本周还没有答题记录，建议至少安排一次输出型自测。",
+    pendingMistakes.length > 0
+      ? `错题风险：待复盘 ${pendingMistakes.length} 道，其中重复错题 ${repeatedMistakes.length} 道；优先处理 ${pendingMistakes
+          .slice(0, 3)
+          .map((mistake) => `「${mistake.title}」`)
+          .join("、")}。`
+      : "错题风险：当前没有待复盘错题。",
+    masteryChangeLines.length > 0
+      ? `掌握分变化：\n${masteryChangeLines.join("\n")}`
+      : "掌握分变化：本周还缺少可用于更新掌握分的复习/自测证据。",
     goalLines.length > 0 ? `目标视角：\n${goalLines.join("\n")}` : "还没有目标数据，建议先创建一个核心目标。",
     weakNotes.length > 0
       ? `需要重点补强：${weakNotes.join("、")}。`

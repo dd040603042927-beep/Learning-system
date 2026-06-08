@@ -7,11 +7,17 @@ from pathlib import Path
 ENTITY_TABLES = {
     "notes": "notes",
     "knowledgePoints": "knowledge_points",
+    "milestones": "milestones",
     "plans": "plans",
     "reviewReminders": "review_reminders",
     "reflections": "reflections",
     "goals": "goals",
     "projects": "projects",
+    "questions": "questions",
+    "answerAttempts": "answer_attempts",
+    "mistakes": "mistakes",
+    "recommendations": "recommendations",
+    "studyEvents": "study_events",
 }
 
 
@@ -50,6 +56,14 @@ def init(conn):
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS knowledge_points (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS milestones (
             id TEXT NOT NULL,
             user_id TEXT NOT NULL,
             data TEXT NOT NULL,
@@ -97,6 +111,46 @@ def init(conn):
             PRIMARY KEY (id, user_id),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS questions (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS answer_attempts (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS mistakes (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS recommendations (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS study_events (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
         """
     )
     conn.commit()
@@ -108,11 +162,17 @@ def read_db(conn):
         "sessions": [],
         "notes": [],
         "knowledgePoints": [],
+        "milestones": [],
         "plans": [],
         "reviewReminders": [],
         "reflections": [],
         "goals": [],
         "projects": [],
+        "questions": [],
+        "answerAttempts": [],
+        "mistakes": [],
+        "recommendations": [],
+        "studyEvents": [],
     }
 
     for row in conn.execute("SELECT * FROM users ORDER BY created_at"):
@@ -151,11 +211,17 @@ def write_db(conn, db):
             "users",
             "notes",
             "knowledge_points",
+            "milestones",
             "plans",
             "review_reminders",
             "reflections",
             "goals",
             "projects",
+            "questions",
+            "answer_attempts",
+            "mistakes",
+            "recommendations",
+            "study_events",
         ]:
             conn.execute(f"DELETE FROM {table}")
 

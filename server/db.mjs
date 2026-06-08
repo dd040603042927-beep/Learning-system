@@ -5,11 +5,17 @@ import { spawnSync } from "node:child_process";
 const stateTables = [
   ["notes", "notes"],
   ["knowledgePoints", "knowledgePoints"],
+  ["milestones", "milestones"],
   ["plans", "plans"],
   ["reviewReminders", "reviewReminders"],
   ["reflections", "reflections"],
   ["goals", "goals"],
   ["projects", "projects"],
+  ["questions", "questions"],
+  ["answerAttempts", "answerAttempts"],
+  ["mistakes", "mistakes"],
+  ["recommendations", "recommendations"],
+  ["studyEvents", "studyEvents"],
 ];
 
 const emptyDb = () => ({
@@ -17,11 +23,17 @@ const emptyDb = () => ({
   sessions: [],
   notes: [],
   knowledgePoints: [],
+  milestones: [],
   plans: [],
   reviewReminders: [],
   reflections: [],
   goals: [],
   projects: [],
+  questions: [],
+  answerAttempts: [],
+  mistakes: [],
+  recommendations: [],
+  studyEvents: [],
 });
 
 function findPython() {

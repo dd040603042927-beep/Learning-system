@@ -1,4 +1,16 @@
-import type { AppState, Goal, Note, PortfolioProject, StudyPlan } from "../types";
+import type {
+  AnswerAttempt,
+  AppState,
+  Goal,
+  Milestone,
+  Mistake,
+  Note,
+  PortfolioProject,
+  Question,
+  Recommendation,
+  StudyEvent,
+  StudyPlan,
+} from "../types";
 import {
   addDaysIso,
   buildReviewSchedule,
@@ -148,6 +160,64 @@ export function makeSeedState(): AppState {
   reviewReminders = reviewReminders.map((reminder, index) =>
     index < 2 ? { ...reminder, dueAt: today } : reminder,
   );
+  knowledgePoints = knowledgePoints.map((point) =>
+    point.name === "联合索引" || point.name === "最左前缀" || point.name === "B+ 树"
+      ? {
+          ...point,
+          masteryScore: 32,
+          evidenceCount: 2,
+          systemMastery: "初学",
+          lastTestScore: 45,
+          lastReviewedAt: addDaysIso(today, -10),
+          repeatedMistakeCount: point.name === "联合索引" ? 1 : 0,
+          reviewPriority: "高",
+          reason: "最近自测低分，且关联错题",
+        }
+      : point,
+  );
+
+  const dbIndexPointIds = knowledgePoints
+    .filter((point) => ["B+ 树", "联合索引", "最左前缀"].includes(point.name))
+    .map((point) => point.id);
+  const tcpPointIds = knowledgePoints
+    .filter((point) => ["SYN", "ACK", "初始序列号"].includes(point.name))
+    .map((point) => point.id);
+
+  const milestones: Milestone[] = [
+    {
+      id: "milestone_408_data_structure_round1",
+      goalId: "goal_kaoyan_408",
+      title: "数据结构第一轮",
+      description: "完成线性表、栈队列、树、图和排序基础笔记，并配套自测。",
+      deadline: addDaysIso(today, -6),
+      status: "延期",
+      progress: 35,
+      createdAt: addDaysIso(today, -18),
+      updatedAt: today,
+    },
+    {
+      id: "milestone_frontend_training",
+      goalId: "goal_career_frontend",
+      title: "前端项目训练闭环",
+      description: "完成 TodoList 第一版，沉淀组件状态、持久化和项目复盘。",
+      deadline: addDaysIso(today, 14),
+      status: "进行中",
+      progress: 42,
+      createdAt: today,
+      updatedAt: today,
+    },
+    {
+      id: "milestone_backend_database",
+      goalId: "goal_shared_backend",
+      title: "数据库索引专项",
+      description: "用自测和错题把 B+ 树、联合索引、回表、覆盖索引讲清楚。",
+      deadline: addDaysIso(today, 7),
+      status: "进行中",
+      progress: 28,
+      createdAt: today,
+      updatedAt: today,
+    },
+  ];
 
   const plans: StudyPlan[] = [
     {
@@ -174,7 +244,76 @@ export function makeSeedState(): AppState {
       source: "笔记行动",
       noteId: "note_react_hooks",
       goalId: "goal_career_frontend",
+      milestoneId: "milestone_frontend_training",
       createdAt: today,
+    },
+    {
+      id: "plan_db_index_training",
+      title: "完成数据库索引 5 题自测并复盘错题",
+      scope: "今日",
+      category: "后端 / 数据库",
+      track: "shared",
+      dueDate: today,
+      status: "未开始",
+      source: "自测系统",
+      noteId: "note_db_index",
+      goalId: "goal_shared_backend",
+      milestoneId: "milestone_backend_database",
+      createdAt: today,
+    },
+  ];
+
+  const questions: Question[] = [
+    {
+      id: "question_db_left_prefix",
+      goalId: "goal_shared_backend",
+      noteId: "note_db_index",
+      knowledgePointIds: dbIndexPointIds,
+      type: "面试题",
+      question: "联合索引为什么要遵守最左前缀原则？请结合一个查询例子说明。",
+      answer: "联合索引按照列顺序组织，查询需要从索引最左列开始匹配，才能有效利用有序结构缩小扫描范围。",
+      difficulty: 4,
+      source: "AI生成",
+      createdAt: today,
+    },
+    {
+      id: "question_tcp_two_handshake",
+      goalId: "goal_shared_backend",
+      noteId: "note_tcp_handshake",
+      knowledgePointIds: tcpPointIds,
+      type: "简答题",
+      question: "为什么 TCP 建立连接不能只用两次握手？",
+      answer: "两次握手无法确认客户端接收能力，也无法可靠同步双方初始序列号，历史连接请求还可能造成服务端资源浪费。",
+      difficulty: 3,
+      source: "AI生成",
+      createdAt: today,
+    },
+  ];
+
+  const answerAttempts: AnswerAttempt[] = [
+    {
+      id: "attempt_db_left_prefix_low",
+      questionId: "question_db_left_prefix",
+      score: 45,
+      answerText: "联合索引要按顺序用，不然索引会失效。",
+      feedback: "回答过浅。你没有解释联合索引的有序组织方式，也没有用查询条件说明为什么必须从最左列开始匹配。",
+      createdAt: today,
+    },
+  ];
+
+  const mistakes: Mistake[] = [
+    {
+      id: "mistake_db_left_prefix",
+      questionId: "question_db_left_prefix",
+      goalId: "goal_shared_backend",
+      noteId: "note_db_index",
+      knowledgePointIds: dbIndexPointIds,
+      title: "联合索引为什么要遵守最左前缀原则？",
+      reason: "回答停留在结论，没有说明 B+ 树索引的列顺序和查询条件如何匹配。",
+      repeatedCount: 1,
+      status: "待复习",
+      createdAt: today,
+      updatedAt: today,
     },
   ];
 
@@ -187,7 +326,51 @@ export function makeSeedState(): AppState {
       difficulty: "把笔记、复习、计划、反思和目标串成闭环，而不是只做静态列表。",
       learnings: "先从真实学习流程出发，再补功能；每个知识点都要能转化为复习和行动。",
       nextAction: "补充后端 API、登录、全文搜索和 AI 接口封装。",
+      goalIds: ["goal_career_frontend", "goal_shared_backend"],
+      knowledgePointIds: knowledgePoints
+        .filter((point) => ["React Hooks", "组件状态", "联合索引"].includes(point.name))
+        .map((point) => point.id),
       linkedNoteIds: ["note_react_hooks", "note_db_index"],
+      createdAt: today,
+    },
+  ];
+
+  const recommendations: Recommendation[] = [
+    {
+      id: "rec_seed_db_index",
+      title: "专项训练：数据库索引",
+      actionType: "做题",
+      goalId: "goal_shared_backend",
+      noteId: "note_db_index",
+      knowledgePointId: dbIndexPointIds[0],
+      priorityScore: 112,
+      reasons: [
+        "关联目标「后端与计算机基础交叉能力」，重要程度 4",
+        "最近一次自测 45 分",
+        "已经 10 天未复习",
+        "出现在 1 道错题中",
+      ],
+      status: "待处理",
+      createdAt: today,
+    },
+  ];
+
+  const studyEvents: StudyEvent[] = [
+    {
+      id: "event_seed_attempt",
+      type: "answered_question",
+      goalId: "goal_shared_backend",
+      noteId: "note_db_index",
+      score: 45,
+      title: "完成数据库索引自测，得分 45",
+      createdAt: today,
+    },
+    {
+      id: "event_seed_mistake",
+      type: "created_mistake",
+      goalId: "goal_shared_backend",
+      noteId: "note_db_index",
+      title: "联合索引最左前缀错题进入错题本",
       createdAt: today,
     },
   ];
@@ -195,6 +378,7 @@ export function makeSeedState(): AppState {
   return {
     notes,
     knowledgePoints,
+    milestones,
     plans,
     reviewReminders,
     reflections: [
@@ -213,5 +397,10 @@ export function makeSeedState(): AppState {
     ],
     goals,
     projects,
+    questions,
+    answerAttempts,
+    mistakes,
+    recommendations,
+    studyEvents,
   };
 }

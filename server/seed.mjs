@@ -13,11 +13,17 @@ export function makeInitialState() {
   return {
     notes: [],
     knowledgePoints: [],
+    milestones: [],
     plans: [],
     reviewReminders: [],
     reflections: [],
     goals: [],
     projects: [],
+    questions: [],
+    answerAttempts: [],
+    mistakes: [],
+    recommendations: [],
+    studyEvents: [],
   };
 }
 
@@ -97,8 +103,25 @@ export function makeSeedState() {
         goalIds: ["goal_career_frontend"],
         tracks: ["career"],
         mastery: "初学",
+        masteryScore: 25,
+        evidenceCount: 0,
+        systemMastery: "初学",
+        repeatedMistakeCount: 0,
         reviewPriority: "高",
         reason: "前端就业高频基础能力",
+        updatedAt: today,
+      },
+    ],
+    milestones: [
+      {
+        id: "milestone_frontend_project",
+        goalId: "goal_career_frontend",
+        title: "TodoList 项目闭环",
+        description: "完成新增、筛选、持久化和复盘记录。",
+        deadline: addDaysIso(today, 14),
+        status: "进行中",
+        progress: 30,
+        createdAt: today,
         updatedAt: today,
       },
     ],
@@ -156,5 +179,10 @@ export function makeSeedState() {
         createdAt: today,
       },
     ],
+    questions: [],
+    answerAttempts: [],
+    mistakes: [],
+    recommendations: [],
+    studyEvents: [],
   };
 }

@@ -539,7 +539,7 @@ textarea.tall {
 
 .closure-panel {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: 12px;
   align-items: center;
   padding: 14px;
@@ -649,6 +649,15 @@ textarea.tall {
   border-top: 1px solid #e4ebf0;
 }
 
+.knowledge-table {
+  min-width: 1160px;
+}
+
+.knowledge-table .table-head,
+.knowledge-table .table-row {
+  grid-template-columns: 1fr 0.7fr 0.65fr 0.85fr 0.85fr 0.6fr 1.4fr 1.2fr;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -697,16 +706,57 @@ textarea.tall {
   grid-template-columns: minmax(180px, 1fr) 160px minmax(180px, 1fr) minmax(180px, 1fr) auto;
 }
 
+.milestone-form {
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) 160px auto;
+}
+
 .single-extra-field,
 .project-extra-fields {
   margin-top: 12px;
 }
 
 .task-card,
-.review-card {
+.review-card,
+.recommendation-card {
   display: grid;
   gap: 10px;
   padding: 14px;
+}
+
+.recommendation-list,
+.question-list,
+.milestone-list {
+  display: grid;
+  gap: 10px;
+}
+
+.recommendation-card {
+  border: 1px solid #dce4ea;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.recommendation-card .card-title-row > div {
+  display: grid;
+  gap: 7px;
+}
+
+.recommendation-card b {
+  display: grid;
+  place-items: center;
+  min-width: 44px;
+  min-height: 36px;
+  border-radius: 8px;
+  color: #174f85;
+  background: #e4f1fb;
+}
+
+.recommendation-card ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: #425266;
 }
 
 .task-card select,
@@ -769,6 +819,76 @@ textarea.tall {
   background: #ffffff;
 }
 
+.training-grid {
+  align-items: stretch;
+}
+
+.compact-form {
+  margin-bottom: 12px;
+}
+
+.question-list {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.question-item {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #dce4ea;
+  border-radius: 8px;
+  color: #17212b;
+  background: #ffffff;
+  text-align: left;
+}
+
+.question-item.active,
+.question-item:hover {
+  border-color: #2166a8;
+  background: #f1f6fb;
+}
+
+.question-item span,
+.question-item small,
+.question-stem span,
+.mistake-card span,
+.milestone-item span,
+.milestone-item small {
+  color: #637182;
+}
+
+.answer-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.question-stem {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f5f8fa;
+}
+
+.answer-reference {
+  padding: 12px;
+  border: 1px solid #dce4ea;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.answer-reference summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.answer-reference p {
+  margin: 8px 0 0;
+  color: #344355;
+}
+
 .timeline-item {
   padding: 12px;
   border-left: 3px solid #2166a8;
@@ -825,6 +945,20 @@ textarea.tall {
   background: #1f9d69;
 }
 
+.progress em {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: #2d77bf;
+  opacity: 0.34;
+}
+
+.dual-progress i {
+  z-index: 2;
+  height: 55%;
+  margin: auto 0;
+}
+
 .goal-card,
 .project-card {
   display: grid;
@@ -879,6 +1013,19 @@ textarea.tall {
   padding: 10px 12px;
   border-left: 3px solid #e29f28;
   background: #fff8e8;
+}
+
+.milestone-list {
+  margin-top: 4px;
+}
+
+.milestone-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #dce4ea;
+  border-radius: 8px;
+  background: #f8fafb;
 }
 
 .range-row {
@@ -953,7 +1100,8 @@ textarea.tall {
 
   .workspace-grid,
   .two-column,
-  .ai-grid {
+  .ai-grid,
+  .training-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1001,11 +1149,12 @@ textarea.tall {
   .plan-board,
   .form-grid,
   .editor-fields,
-  .inline-form,
-  .project-form,
-  .flow-row,
-  .goal-template-grid,
-  .goal-suggestion-row,
+    .inline-form,
+    .project-form,
+    .milestone-form,
+    .flow-row,
+    .goal-template-grid,
+    .goal-suggestion-row,
   .mini-stat-grid {
     grid-template-columns: 1fr;
   }
