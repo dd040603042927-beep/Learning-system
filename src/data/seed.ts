@@ -2,12 +2,18 @@ import type {
   AnswerAttempt,
   AppState,
   Goal,
+  ImportJob,
+  LearningPath,
+  LearningPathStep,
   Milestone,
   Mistake,
   Note,
   PortfolioProject,
   Question,
   Recommendation,
+  Resource,
+  ResourceChunk,
+  ReviewPolicy,
   StudyEvent,
   StudyPlan,
 } from "../types";
@@ -183,6 +189,49 @@ export function makeSeedState(): AppState {
     .filter((point) => ["SYN", "ACK", "初始序列号"].includes(point.name))
     .map((point) => point.id);
 
+  const resources: Resource[] = [
+    {
+      id: "resource_tcp_courseware",
+      title: "计算机网络 TCP 连接管理资料",
+      type: "markdown",
+      goalId: "goal_shared_backend",
+      sourceName: "课程资料摘录",
+      fileName: "tcp-connection.md",
+      contentText:
+        "# TCP 连接管理\n\nTCP 建立连接需要三次握手。客户端发送 SYN，服务端返回 SYN+ACK，客户端再发送 ACK，用于确认双方收发能力并同步初始序列号。\n\n## 两次握手的问题\n两次握手无法确认客户端接收能力，历史连接请求可能让服务端误以为新连接已经建立，从而浪费半连接队列等资源。\n\n## 相关考点\nSYN、ACK、初始序列号、半连接队列、SYN Flood、四次挥手和 TIME_WAIT 都经常一起考。",
+      status: "已解析",
+      createdAt: today,
+      updatedAt: today,
+    },
+  ];
+
+  const resourceChunks: ResourceChunk[] = [
+    {
+      id: "chunk_tcp_handshake",
+      resourceId: "resource_tcp_courseware",
+      goalId: "goal_shared_backend",
+      title: "TCP 三次握手",
+      content:
+        "TCP 建立连接需要三次握手。客户端发送 SYN，服务端返回 SYN+ACK，客户端再发送 ACK，用于确认双方收发能力并同步初始序列号。",
+      orderIndex: 0,
+      summary: "三次握手确认双方收发能力并同步初始序列号。",
+      knowledgePointIds: tcpPointIds,
+      createdAt: today,
+    },
+    {
+      id: "chunk_tcp_two_handshake",
+      resourceId: "resource_tcp_courseware",
+      goalId: "goal_shared_backend",
+      title: "两次握手的问题",
+      content:
+        "两次握手无法确认客户端接收能力，历史连接请求可能让服务端误以为新连接已经建立，从而浪费半连接队列等资源。",
+      orderIndex: 1,
+      summary: "两次握手无法可靠确认客户端接收能力，也可能带来旧连接资源浪费。",
+      knowledgePointIds: tcpPointIds,
+      createdAt: today,
+    },
+  ];
+
   const milestones: Milestone[] = [
     {
       id: "milestone_408_data_structure_round1",
@@ -355,6 +404,78 @@ export function makeSeedState(): AppState {
     },
   ];
 
+  const learningPaths: LearningPath[] = [
+    {
+      id: "path_backend_week",
+      goalId: "goal_shared_backend",
+      title: "后端与计算机基础 7 天自适应学习路径",
+      startDate: today,
+      endDate: addDaysIso(today, 6),
+      status: "执行中",
+      createdAt: today,
+      updatedAt: today,
+    },
+  ];
+
+  const learningPathSteps: LearningPathStep[] = [
+    {
+      id: "path_step_tcp_resource",
+      pathId: "path_backend_week",
+      goalId: "goal_shared_backend",
+      title: "阅读资料并标注重点：计算机网络 TCP 连接管理资料",
+      actionType: "读资料",
+      sourceId: "resource_tcp_courseware",
+      dueDate: today,
+      estimatedMinutes: 45,
+      status: "未开始",
+      reasons: ["资料已解析，可直接进入学习", "关联目标「后端与计算机基础交叉能力」"],
+    },
+    {
+      id: "path_step_db_mistake",
+      pathId: "path_backend_week",
+      goalId: "goal_shared_backend",
+      title: "错题复盘：联合索引为什么要遵守最左前缀原则？",
+      actionType: "错题复盘",
+      sourceId: "mistake_db_left_prefix",
+      dueDate: addDaysIso(today, 1),
+      estimatedMinutes: 35,
+      status: "未开始",
+      reasons: ["错题重复 1 次", "回答停留在结论，需要解释索引结构"],
+    },
+    {
+      id: "path_step_weekly_review",
+      pathId: "path_backend_week",
+      goalId: "goal_shared_backend",
+      title: "生成并补充本周复盘：后端与计算机基础交叉能力",
+      actionType: "周总结",
+      dueDate: addDaysIso(today, 6),
+      estimatedMinutes: 30,
+      status: "未开始",
+      reasons: ["用周总结校准掌握度和下周安排"],
+    },
+  ];
+
+  const importJobs: ImportJob[] = [
+    {
+      id: "import_job_tcp_courseware",
+      resourceId: "resource_tcp_courseware",
+      status: "已完成",
+      step: "生成题目",
+      createdAt: today,
+      updatedAt: today,
+    },
+  ];
+
+  const reviewPolicies: ReviewPolicy[] = [
+    {
+      id: "review_policy_default",
+      name: "默认自适应复习策略",
+      baseIntervals: [1, 3, 7, 14, 30],
+      lowScoreInterval: 1,
+      highScoreMultiplier: 1.5,
+    },
+  ];
+
   const studyEvents: StudyEvent[] = [
     {
       id: "event_seed_attempt",
@@ -377,6 +498,11 @@ export function makeSeedState(): AppState {
 
   return {
     notes,
+    resources,
+    resourceChunks,
+    searchDocuments: [],
+    learningPaths,
+    learningPathSteps,
     knowledgePoints,
     milestones,
     plans,
@@ -402,5 +528,10 @@ export function makeSeedState(): AppState {
     mistakes,
     recommendations,
     studyEvents,
+    rubrics: [],
+    aiGradingResults: [],
+    knowledgeRelations: [],
+    reviewPolicies,
+    importJobs,
   };
 }

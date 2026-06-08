@@ -99,3 +99,26 @@ export async function runBackendAi(action: AiAction, noteId?: string) {
   });
   return payload.output;
 }
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  const chunks: string[] = [];
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    chunks.push(String.fromCharCode(...chunk));
+  }
+  return window.btoa(chunks.join(""));
+}
+
+export async function extractResourceFileText(file: File) {
+  const buffer = await file.arrayBuffer();
+  return request<{ text: string; status: "extracted" | "empty" }>("/api/resources/extract-text", {
+    method: "POST",
+    body: JSON.stringify({
+      fileName: file.name,
+      mimeType: file.type,
+      base64: arrayBufferToBase64(buffer),
+    }),
+  });
+}

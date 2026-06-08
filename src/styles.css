@@ -265,7 +265,10 @@ nav button.active {
 .metric-card,
 .panel,
 .review-card,
-.task-card {
+.task-card,
+.resource-card,
+.search-result-card,
+.path-step-card {
   border: 1px solid #dce4ea;
   border-radius: 8px;
   background: #ffffff;
@@ -288,6 +291,9 @@ nav button.active {
 .timeline-item small,
 .note-item small,
 .note-item span,
+.resource-card span,
+.search-result-card span,
+.path-step-card span,
 .project-card dt,
 .goal-card > span,
 .muted-line {
@@ -706,6 +712,19 @@ textarea.tall {
   grid-template-columns: minmax(180px, 1fr) 160px minmax(180px, 1fr) minmax(180px, 1fr) auto;
 }
 
+.search-form {
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.45fr);
+  margin-bottom: 14px;
+}
+
+.path-form {
+  grid-template-columns: minmax(260px, 1fr) 120px auto auto;
+}
+
+.resource-file-row {
+  margin: 14px 0;
+}
+
 .milestone-form {
   grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) 160px auto;
 }
@@ -717,6 +736,10 @@ textarea.tall {
 
 .task-card,
 .review-card,
+.resource-card,
+.search-result-card,
+.path-step-card,
+.grading-result-card,
 .recommendation-card {
   display: grid;
   gap: 10px;
@@ -889,9 +912,74 @@ textarea.tall {
   color: #344355;
 }
 
+.rubric-editor textarea {
+  min-height: 112px;
+  margin-top: 10px;
+}
+
+.rubric-tools {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  align-items: end;
+  margin-top: 10px;
+}
+
+.grading-result-card {
+  border: 1px solid #dce4ea;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.grading-result-card dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.grading-result-card dt {
+  color: #637182;
+  font-weight: 800;
+}
+
+.grading-result-card dd {
+  margin: 0 0 6px;
+  color: #344355;
+}
+
+.resource-card p,
+.search-result-card p {
+  margin: 0;
+  color: #344355;
+}
+
+.path-step-card {
+  background: #f8fafb;
+}
+
+.path-step-card ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: #425266;
+}
+
+.timeline-day {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #dce4ea;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
 .timeline-item {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
   padding: 12px;
   border-left: 3px solid #2166a8;
+  border-radius: 8px;
   background: #f7fafc;
 }
 
@@ -1053,6 +1141,11 @@ textarea.tall {
   border-radius: 8px;
   color: #213140;
   background: #f5f8fa;
+}
+
+.compact-output pre {
+  min-height: 160px;
+  margin-bottom: 0;
 }
 
 .empty-state {

@@ -5,6 +5,7 @@ import { extname, join, normalize, resolve } from "node:path";
 import { makeInitialState } from "./seed.mjs";
 import { openDb, publicUser, replaceUserState, selectUserState } from "./db.mjs";
 import { runRealAi } from "./ai.mjs";
+import { extractResourceText } from "./resource_extract.mjs";
 
 const dbStore = openDb();
 const distRoot = resolve("dist");
@@ -42,7 +43,7 @@ const readBody = (request) =>
     let raw = "";
     request.on("data", (chunk) => {
       raw += chunk;
-      if (raw.length > 2_000_000) {
+      if (raw.length > 16_000_000) {
         request.destroy();
         reject(new Error("Request body too large"));
       }
@@ -179,6 +180,25 @@ const handleApi = async (request, response, url) => {
     replaceUserState(auth.db, auth.user.id, body.state || {});
     dbStore.write(auth.db);
     json(response, 200, { ok: true });
+    return true;
+  }
+
+  if (url.pathname === "/api/resources/extract-text" && request.method === "POST") {
+    const auth = requireAuth(request, response);
+    if (!auth) return true;
+    const body = await readBody(request);
+    try {
+      const text = extractResourceText({
+        fileName: String(body.fileName || ""),
+        mimeType: String(body.mimeType || ""),
+        base64: String(body.base64 || ""),
+      });
+      json(response, 200, { text, status: text.trim() ? "extracted" : "empty" });
+    } catch (error) {
+      json(response, 422, {
+        message: error.message || "资料正文解析失败",
+      });
+    }
     return true;
   }
 

@@ -315,3 +315,108 @@ test("learning rules: weekly summary reports mistakes, milestones, test score an
     await cleanup();
   }
 });
+
+test("v4 rules: resource import powers search, knowledge answers and learning paths", async () => {
+  const { module, cleanup } = await importLearningModule();
+  try {
+    const state = makeBaseState();
+    const resource = {
+      id: "resource_tcp",
+      title: "TCP 连接管理资料",
+      type: "markdown",
+      goalId: "goal_backend",
+      sourceName: "课程讲义",
+      fileName: "tcp.md",
+      contentText:
+        "# TCP 连接管理\n\nTCP 需要三次握手。客户端发送 SYN，服务端返回 SYN+ACK，客户端再发送 ACK。\n\n## 为什么不是两次握手\n两次握手无法确认客户端接收能力，也无法可靠同步双方初始序列号，历史连接请求可能造成服务端资源浪费。",
+      status: "已解析",
+      createdAt: "2026-06-08",
+      updatedAt: "2026-06-08",
+    };
+
+    const chunks = module.buildResourceChunks(resource, 120);
+    assert.ok(chunks.length >= 2);
+    assert.equal(chunks[0].resourceId, resource.id);
+    assert.ok(chunks[0].summary.includes("TCP"));
+
+    const note = module.buildNoteFromResource(resource, chunks, state.goals);
+    assert.equal(note.associatedGoalIds[0], "goal_backend");
+    assert.equal(note.mastery, "初学");
+    assert.ok(note.coreConcepts.length > 0);
+
+    const knowledgePoints = module.upsertKnowledgeFromNote(note, state.knowledgePoints, state.goals);
+    const nextState = {
+      ...state,
+      resources: [resource],
+      resourceChunks: chunks,
+      notes: [note, ...state.notes],
+      knowledgePoints,
+      searchDocuments: [],
+      learningPaths: [],
+      learningPathSteps: [],
+      rubrics: [],
+      aiGradingResults: [],
+      knowledgeRelations: [],
+      reviewPolicies: [],
+      importJobs: [],
+    };
+
+    const documents = module.buildSearchDocuments(nextState);
+    assert.ok(documents.some((document) => document.sourceType === "resource"));
+    assert.ok(documents.some((document) => document.sourceType === "note"));
+
+    const results = module.searchKnowledgeBase(nextState, "为什么 TCP 不能两次握手");
+    assert.ok(results.length >= 1);
+    assert.ok(results[0].score > 0);
+    assert.ok(["resource", "note", "question", "knowledge"].includes(results[0].document.sourceType));
+
+    const answer = module.answerKnowledgeQuestion(nextState, "为什么 TCP 不能两次握手？");
+    assert.match(answer.answer, /参考来源/);
+    assert.ok(answer.sources.length >= 1);
+
+    const generated = module.buildAdaptiveLearningPath(nextState, "goal_backend", {
+      startDate: "2026-06-08",
+      horizonDays: 7,
+    });
+    assert.ok(generated);
+    assert.equal(generated.path.goalId, "goal_backend");
+    assert.ok(generated.steps.some((step) => step.actionType === "读资料"));
+    assert.ok(generated.steps.some((step) => step.actionType === "做题" || step.actionType === "错题复盘"));
+
+    const plans = module.materializeLearningPathAsPlans(
+      generated.path,
+      generated.steps,
+      state.goals[0],
+    );
+    assert.equal(plans.length, generated.steps.length);
+    assert.ok(plans.every((plan) => plan.source === "学习路径"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v4 grading: rubric based grading reports missing points and low score", async () => {
+  const { module, cleanup } = await importLearningModule();
+  try {
+    const question = makeBaseState().questions[0];
+    const rubric = module.buildDefaultRubric(question);
+    assert.equal(rubric.questionId, question.id);
+    assert.ok(rubric.criteria.length >= 3);
+
+    const weak = module.gradeAnswerWithRubric(question, rubric, "按顺序用。");
+    assert.equal(weak.questionId, question.id);
+    assert.ok(weak.score < 60);
+    assert.ok(weak.missingPoints.length > 0);
+    assert.match(weak.nextAction, /重学|遗漏|费曼/);
+
+    const strong = module.gradeAnswerWithRubric(
+      question,
+      rubric,
+      "联合索引按照列顺序组织，查询要从最左列开始匹配，才能利用有序结构缩小扫描范围。例如 index(a,b) 在只查 b 时很难命中完整索引。",
+    );
+    assert.ok(strong.score > weak.score);
+    assert.ok(strong.strengths.length > 0);
+  } finally {
+    await cleanup();
+  }
+});

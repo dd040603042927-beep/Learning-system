@@ -6,6 +6,11 @@ from pathlib import Path
 
 ENTITY_TABLES = {
     "notes": "notes",
+    "resources": "resources",
+    "resourceChunks": "resource_chunks",
+    "searchDocuments": "search_documents",
+    "learningPaths": "learning_paths",
+    "learningPathSteps": "learning_path_steps",
     "knowledgePoints": "knowledge_points",
     "milestones": "milestones",
     "plans": "plans",
@@ -18,6 +23,11 @@ ENTITY_TABLES = {
     "mistakes": "mistakes",
     "recommendations": "recommendations",
     "studyEvents": "study_events",
+    "rubrics": "rubrics",
+    "aiGradingResults": "ai_grading_results",
+    "knowledgeRelations": "knowledge_relations",
+    "reviewPolicies": "review_policies",
+    "importJobs": "import_jobs",
 }
 
 
@@ -47,7 +57,51 @@ def init(conn):
             expires_at TEXT NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS migrations (
+            id TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS notes (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS resources (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS resource_chunks (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS search_documents (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS learning_paths (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS learning_path_steps (
             id TEXT NOT NULL,
             user_id TEXT NOT NULL,
             data TEXT NOT NULL,
@@ -151,6 +205,52 @@ def init(conn):
             PRIMARY KEY (id, user_id),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS rubrics (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS ai_grading_results (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_relations (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS review_policies (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS import_jobs (
+            id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO migrations (id, applied_at)
+        VALUES ('2026-06-08-v4-knowledge-hub', datetime('now'))
         """
     )
     conn.commit()
@@ -161,6 +261,11 @@ def read_db(conn):
         "users": [],
         "sessions": [],
         "notes": [],
+        "resources": [],
+        "resourceChunks": [],
+        "searchDocuments": [],
+        "learningPaths": [],
+        "learningPathSteps": [],
         "knowledgePoints": [],
         "milestones": [],
         "plans": [],
@@ -173,6 +278,11 @@ def read_db(conn):
         "mistakes": [],
         "recommendations": [],
         "studyEvents": [],
+        "rubrics": [],
+        "aiGradingResults": [],
+        "knowledgeRelations": [],
+        "reviewPolicies": [],
+        "importJobs": [],
     }
 
     for row in conn.execute("SELECT * FROM users ORDER BY created_at"):
@@ -210,6 +320,11 @@ def write_db(conn, db):
             "sessions",
             "users",
             "notes",
+            "resources",
+            "resource_chunks",
+            "search_documents",
+            "learning_paths",
+            "learning_path_steps",
             "knowledge_points",
             "milestones",
             "plans",
@@ -222,6 +337,11 @@ def write_db(conn, db):
             "mistakes",
             "recommendations",
             "study_events",
+            "rubrics",
+            "ai_grading_results",
+            "knowledge_relations",
+            "review_policies",
+            "import_jobs",
         ]:
             conn.execute(f"DELETE FROM {table}")
 

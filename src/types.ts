@@ -6,7 +6,15 @@ export type PlanScope = "今日" | "本周" | "下周";
 export type PlanStatus = "未开始" | "进行中" | "完成";
 export type ReviewStatus = "待复习" | "已完成" | "跳过";
 export type ReviewMode = "复习" | "自测" | "费曼讲解";
-export type SourceType = "手动" | "笔记行动" | "复习系统" | "AI建议" | "周总结" | "自测系统";
+export type SourceType =
+  | "手动"
+  | "笔记行动"
+  | "复习系统"
+  | "AI建议"
+  | "周总结"
+  | "自测系统"
+  | "资料导入"
+  | "学习路径";
 export type GoalType = "template" | "custom";
 export type GoalImportance = 1 | 2 | 3 | 4 | 5;
 export type GoalStatus = "进行中" | "已完成" | "暂停" | "放弃";
@@ -24,6 +32,7 @@ export type RecommendationAction =
 export type RecommendationStatus = "待处理" | "已接受" | "已完成" | "忽略";
 export type StudyEventType =
   | "created_note"
+  | "imported_resource"
   | "completed_plan"
   | "completed_review"
   | "answered_question"
@@ -31,7 +40,32 @@ export type StudyEventType =
   | "updated_goal"
   | "created_milestone"
   | "created_question"
-  | "created_mistake";
+  | "created_mistake"
+  | "generated_learning_path";
+export type ResourceType = "markdown" | "txt" | "pdf" | "web" | "docx";
+export type ResourceStatus = "待解析" | "已解析" | "解析失败";
+export type SearchSourceType =
+  | "note"
+  | "resource"
+  | "question"
+  | "mistake"
+  | "knowledge"
+  | "goal"
+  | "milestone"
+  | "reflection";
+export type LearningPathStatus = "草稿" | "执行中" | "完成" | "暂停";
+export type LearningPathAction =
+  | "读资料"
+  | "写笔记"
+  | "复习"
+  | "做题"
+  | "错题复盘"
+  | "项目实践"
+  | "周总结";
+export type LearningPathStepStatus = "未开始" | "进行中" | "完成" | "跳过";
+export type KnowledgeRelationType = "前置" | "相关" | "容易混淆" | "应用于";
+export type ImportJobStatus = "等待中" | "解析中" | "已完成" | "失败";
+export type ImportJobStep = "上传" | "提取文本" | "分段" | "总结" | "生成题目";
 
 export interface ReviewRecord {
   id: string;
@@ -40,6 +74,113 @@ export interface ReviewRecord {
   result: string;
   score: number;
   nextReviewAt: string;
+}
+
+export interface Resource {
+  id: string;
+  title: string;
+  type: ResourceType;
+  goalId?: string;
+  sourceName?: string;
+  fileName?: string;
+  contentText: string;
+  status: ResourceStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResourceChunk {
+  id: string;
+  resourceId: string;
+  goalId?: string;
+  title: string;
+  content: string;
+  orderIndex: number;
+  summary?: string;
+  knowledgePointIds: string[];
+  createdAt: string;
+}
+
+export interface SearchDocument {
+  id: string;
+  sourceType: SearchSourceType;
+  sourceId: string;
+  goalId?: string;
+  title: string;
+  content: string;
+  keywords: string[];
+  updatedAt: string;
+}
+
+export interface LearningPath {
+  id: string;
+  goalId: string;
+  title: string;
+  startDate: string;
+  endDate: string;
+  status: LearningPathStatus;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface LearningPathStep {
+  id: string;
+  pathId: string;
+  goalId: string;
+  milestoneId?: string;
+  title: string;
+  actionType: LearningPathAction;
+  sourceId?: string;
+  dueDate: string;
+  estimatedMinutes: number;
+  status: LearningPathStepStatus;
+  reasons: string[];
+}
+
+export interface Rubric {
+  id: string;
+  questionId: string;
+  criteria: string[];
+  totalScore: number;
+}
+
+export interface AiGradingResult {
+  id: string;
+  questionId: string;
+  attemptId: string;
+  score: number;
+  strengths: string[];
+  missingPoints: string[];
+  misconception: string;
+  nextAction: string;
+  createdAt: string;
+}
+
+export interface KnowledgeRelation {
+  id: string;
+  sourceKnowledgeId: string;
+  targetKnowledgeId: string;
+  relationType: KnowledgeRelationType;
+  reason: string;
+}
+
+export interface ReviewPolicy {
+  id: string;
+  userId?: string;
+  name: string;
+  baseIntervals: number[];
+  lowScoreInterval: number;
+  highScoreMultiplier: number;
+}
+
+export interface ImportJob {
+  id: string;
+  resourceId: string;
+  status: ImportJobStatus;
+  step: ImportJobStep;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Note {
@@ -229,6 +370,11 @@ export interface StudyEvent {
 
 export interface AppState {
   notes: Note[];
+  resources: Resource[];
+  resourceChunks: ResourceChunk[];
+  searchDocuments: SearchDocument[];
+  learningPaths: LearningPath[];
+  learningPathSteps: LearningPathStep[];
   knowledgePoints: KnowledgePoint[];
   milestones: Milestone[];
   plans: StudyPlan[];
@@ -241,4 +387,9 @@ export interface AppState {
   mistakes: Mistake[];
   recommendations: Recommendation[];
   studyEvents: StudyEvent[];
+  rubrics: Rubric[];
+  aiGradingResults: AiGradingResult[];
+  knowledgeRelations: KnowledgeRelation[];
+  reviewPolicies: ReviewPolicy[];
+  importJobs: ImportJob[];
 }

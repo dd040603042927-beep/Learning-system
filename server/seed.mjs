@@ -12,6 +12,11 @@ const uid = (prefix) =>
 export function makeInitialState() {
   return {
     notes: [],
+    resources: [],
+    resourceChunks: [],
+    searchDocuments: [],
+    learningPaths: [],
+    learningPathSteps: [],
     knowledgePoints: [],
     milestones: [],
     plans: [],
@@ -24,6 +29,11 @@ export function makeInitialState() {
     mistakes: [],
     recommendations: [],
     studyEvents: [],
+    rubrics: [],
+    aiGradingResults: [],
+    knowledgeRelations: [],
+    reviewPolicies: [],
+    importJobs: [],
   };
 }
 
@@ -95,6 +105,11 @@ export function makeSeedState() {
 
   return {
     notes,
+    resources: [],
+    resourceChunks: [],
+    searchDocuments: [],
+    learningPaths: [],
+    learningPathSteps: [],
     knowledgePoints: [
       {
         id: "kp_react_hooks",
@@ -184,5 +199,10 @@ export function makeSeedState() {
     mistakes: [],
     recommendations: [],
     studyEvents: [],
+    rubrics: [],
+    aiGradingResults: [],
+    knowledgeRelations: [],
+    reviewPolicies: [],
+    importJobs: [],
   };
 }

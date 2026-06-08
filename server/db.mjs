@@ -4,6 +4,11 @@ import { spawnSync } from "node:child_process";
 
 const stateTables = [
   ["notes", "notes"],
+  ["resources", "resources"],
+  ["resourceChunks", "resourceChunks"],
+  ["searchDocuments", "searchDocuments"],
+  ["learningPaths", "learningPaths"],
+  ["learningPathSteps", "learningPathSteps"],
   ["knowledgePoints", "knowledgePoints"],
   ["milestones", "milestones"],
   ["plans", "plans"],
@@ -16,12 +21,22 @@ const stateTables = [
   ["mistakes", "mistakes"],
   ["recommendations", "recommendations"],
   ["studyEvents", "studyEvents"],
+  ["rubrics", "rubrics"],
+  ["aiGradingResults", "aiGradingResults"],
+  ["knowledgeRelations", "knowledgeRelations"],
+  ["reviewPolicies", "reviewPolicies"],
+  ["importJobs", "importJobs"],
 ];
 
 const emptyDb = () => ({
   users: [],
   sessions: [],
   notes: [],
+  resources: [],
+  resourceChunks: [],
+  searchDocuments: [],
+  learningPaths: [],
+  learningPathSteps: [],
   knowledgePoints: [],
   milestones: [],
   plans: [],
@@ -34,6 +49,11 @@ const emptyDb = () => ({
   mistakes: [],
   recommendations: [],
   studyEvents: [],
+  rubrics: [],
+  aiGradingResults: [],
+  knowledgeRelations: [],
+  reviewPolicies: [],
+  importJobs: [],
 });
 
 function findPython() {

@@ -76,12 +76,18 @@ test("auth and state API: register, login, save state, read state", async (t) =>
   assert.equal(registered.body.user.username, username);
   assert.ok(registered.body.token);
   assert.ok(Array.isArray(registered.body.state.notes));
+  assert.ok(Array.isArray(registered.body.state.resources));
+  assert.ok(Array.isArray(registered.body.state.resourceChunks));
+  assert.ok(Array.isArray(registered.body.state.searchDocuments));
+  assert.ok(Array.isArray(registered.body.state.learningPaths));
+  assert.ok(Array.isArray(registered.body.state.learningPathSteps));
   assert.ok(Array.isArray(registered.body.state.milestones));
   assert.ok(Array.isArray(registered.body.state.questions));
   assert.ok(Array.isArray(registered.body.state.answerAttempts));
   assert.ok(Array.isArray(registered.body.state.mistakes));
   assert.ok(Array.isArray(registered.body.state.recommendations));
   assert.ok(Array.isArray(registered.body.state.studyEvents));
+  assert.ok(Array.isArray(registered.body.state.importJobs));
   assert.deepEqual(registered.body.state.goals, []);
   assert.ok(
     !registered.body.state.goals.some((goal) =>
@@ -227,7 +233,68 @@ test("auth and state API: register, login, save state, read state", async (t) =>
     title: "完成六级听力自测",
     createdAt: "2026-06-07",
   };
+  const resource = {
+    id: "resource_api_test",
+    title: "英语六级听力真题资料",
+    type: "markdown",
+    goalId: customGoal.id,
+    sourceName: "真题摘录",
+    fileName: "cet6-listening.md",
+    contentText: "听力训练需要先盲听，再对照原文定位弱点，最后复述核心句。",
+    status: "已解析",
+    createdAt: "2026-06-07",
+    updatedAt: "2026-06-07",
+  };
+  const resourceChunk = {
+    id: "chunk_api_test",
+    resourceId: resource.id,
+    goalId: customGoal.id,
+    title: "听力训练流程",
+    content: "先盲听，再对照原文定位弱点，最后复述核心句。",
+    orderIndex: 0,
+    summary: "听力精听按盲听、对照、复述推进。",
+    knowledgePointIds: [knowledgePoint.id],
+    createdAt: "2026-06-07",
+  };
+  const learningPath = {
+    id: "path_api_test",
+    goalId: customGoal.id,
+    title: "英语六级 7 天学习路径",
+    startDate: "2026-06-07",
+    endDate: "2026-06-13",
+    status: "草稿",
+    createdAt: "2026-06-07",
+    updatedAt: "2026-06-07",
+  };
+  const learningPathStep = {
+    id: "path_step_api_test",
+    pathId: learningPath.id,
+    goalId: customGoal.id,
+    title: "阅读资料并完成听力精听",
+    actionType: "读资料",
+    sourceId: resource.id,
+    dueDate: "2026-06-08",
+    estimatedMinutes: 45,
+    status: "未开始",
+    reasons: ["资料已解析", "关联目标「英语六级真题刷完」"],
+  };
   state.goals = [customGoal];
+  state.resources = [resource];
+  state.resourceChunks = [resourceChunk];
+  state.searchDocuments = [
+    {
+      id: "search_api_test",
+      sourceType: "resource",
+      sourceId: resource.id,
+      goalId: customGoal.id,
+      title: resource.title,
+      content: resource.contentText,
+      keywords: ["听力", "精听"],
+      updatedAt: "2026-06-07",
+    },
+  ];
+  state.learningPaths = [learningPath];
+  state.learningPathSteps = [learningPathStep];
   state.notes = [linkedNote];
   state.knowledgePoints = [knowledgePoint];
   state.milestones = [milestone];
@@ -277,6 +344,16 @@ test("auth and state API: register, login, save state, read state", async (t) =>
   state.mistakes = [mistake];
   state.recommendations = [recommendation];
   state.studyEvents = [studyEvent];
+  state.importJobs = [
+    {
+      id: "import_job_api_test",
+      resourceId: resource.id,
+      status: "已完成",
+      step: "生成题目",
+      createdAt: "2026-06-07",
+      updatedAt: "2026-06-07",
+    },
+  ];
 
   const saved = await api(baseUrl, "/api/state", {
     method: "PUT",
@@ -302,6 +379,12 @@ test("auth and state API: register, login, save state, read state", async (t) =>
   assert.equal(read.body.state.goals[0].type, "custom");
   assert.equal(read.body.state.goals[0].domain, "英语六级");
   assert.equal(read.body.state.goals[0].importance, 5);
+  assert.equal(read.body.state.resources[0].title, resource.title);
+  assert.equal(read.body.state.resourceChunks[0].resourceId, resource.id);
+  assert.equal(read.body.state.searchDocuments[0].sourceType, "resource");
+  assert.equal(read.body.state.learningPaths[0].title, learningPath.title);
+  assert.equal(read.body.state.learningPathSteps[0].actionType, "读资料");
+  assert.equal(read.body.state.importJobs[0].status, "已完成");
   assert.deepEqual(read.body.state.notes[0].associatedGoalIds, [customGoal.id]);
   assert.equal(read.body.state.plans[0].goalId, customGoal.id);
   assert.equal(read.body.state.plans[0].milestoneId, milestone.id);

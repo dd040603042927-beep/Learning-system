@@ -9,12 +9,14 @@ import {
   FileText,
   Gauge,
   Lightbulb,
+  LibraryBig,
   LogOut,
   NotebookPen,
   Pencil,
   Plus,
   RefreshCcw,
   RotateCcw,
+  Route,
   Tags,
   Target,
   Trash2,
@@ -22,6 +24,7 @@ import {
 } from "lucide-react";
 import type {
   AnswerAttempt,
+  AiGradingResult,
   Goal,
   GoalImportance,
   Importance,
@@ -35,8 +38,11 @@ import type {
   PortfolioProject,
   Question,
   Recommendation,
+  Resource,
+  ResourceType,
   ReviewMode,
   ReviewReminder,
+  Rubric,
   StudyPlan,
   Track,
 } from "./types";
@@ -44,27 +50,38 @@ import { aiActionLabels, runLocalAi, type AiAction } from "./lib/ai";
 import {
   addDaysIso,
   applyKnowledgeEvidence,
+  answerKnowledgeQuestion,
+  buildAdaptiveLearningPath,
   buildGoalInsights,
   buildLearningAnalytics,
-  buildAttemptFeedback,
+  buildLearningTimeline,
+  buildNoteFromResource,
+  buildDefaultRubric,
   buildRecommendations,
+  buildResourceChunks,
   buildReviewSchedule,
+  buildSearchDocuments,
   buildWeeklySummary,
   cleanUnique,
   completionRate,
   createStudyEvent,
   dueReminders,
+  generateQuestionsFromResource,
   generateQuestionsFromNote,
+  gradeAnswerWithRubric,
   getGoalTemplate,
   getWeekStartIso,
   goalImportanceLabels,
   goalStatuses,
   goalTemplates,
+  inferResourceTypeFromName,
+  materializeLearningPathAsPlans,
   masteryFromScore,
   nextIntervalByScore,
   normalizeState,
   planFromNoteAction,
   reviewEvidenceDelta,
+  searchKnowledgeBase,
   splitList,
   todayIso,
   trackLabels,
@@ -78,6 +95,7 @@ import {
 import { exportState, loadState, resetState, saveState } from "./lib/storage";
 import {
   getCurrentUser,
+  extractResourceFileText,
   loginUser,
   logoutUser,
   registerUser,
@@ -86,9 +104,13 @@ import {
   type AuthPayload,
   type AuthUser,
 } from "./lib/api";
+import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
+import { LearningPathsPage } from "./pages/LearningPathsPage";
 
 type TabKey =
   | "dashboard"
+  | "knowledgeBase"
+  | "learningPaths"
   | "notes"
   | "knowledge"
   | "plans"
@@ -114,6 +136,8 @@ interface GoalDraft {
 const tabs: Array<{ key: TabKey; label: string; icon: typeof Gauge }> = [
   { key: "dashboard", label: "总览", icon: Gauge },
   { key: "goals", label: "我的目标", icon: Target },
+  { key: "knowledgeBase", label: "知识库", icon: LibraryBig },
+  { key: "learningPaths", label: "学习路径", icon: Route },
   { key: "notes", label: "笔记库", icon: NotebookPen },
   { key: "reviews", label: "训练中心", icon: RotateCcw },
   { key: "plans", label: "学习计划", icon: CalendarCheck },
@@ -219,6 +243,20 @@ function App() {
     answer: "",
     difficulty: 3 as Question["difficulty"],
   });
+  const [resourceDraft, setResourceDraft] = useState({
+    title: "",
+    type: "markdown" as ResourceType,
+    goalId: state.goals[0]?.id ?? "",
+    sourceName: "",
+    fileName: "",
+    contentText: "",
+  });
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchGoalId, setSearchGoalId] = useState("");
+  const [knowledgeQuestion, setKnowledgeQuestion] = useState("");
+  const [knowledgeAnswer, setKnowledgeAnswer] = useState("");
+  const [pathGoalId, setPathGoalId] = useState(state.goals[0]?.id ?? "");
+  const [pathHorizonDays, setPathHorizonDays] = useState(14);
   const [selectedQuestionId, setSelectedQuestionId] = useState(state.questions[0]?.id ?? "");
   const selectedQuestion = useMemo(
     () => state.questions.find((question) => question.id === selectedQuestionId),
@@ -226,6 +264,9 @@ function App() {
   );
   const [answerDrafts, setAnswerDrafts] = useState<
     Record<string, { answerText: string; score: number }>
+  >({});
+  const [rubricDrafts, setRubricDrafts] = useState<
+    Record<string, { criteriaText: string; totalScore: number }>
   >({});
   const [aiAction, setAiAction] = useState<AiAction>("next");
   const [aiOutput, setAiOutput] = useState("");
@@ -312,6 +353,11 @@ function App() {
       ...current,
       goalId: current.goalId || state.goals[0]?.id || "",
     }));
+    setResourceDraft((current) => ({
+      ...current,
+      goalId: current.goalId || state.goals[0]?.id || "",
+    }));
+    setPathGoalId((current) => current || state.goals[0]?.id || "");
   }, [state.notes, state.goals]);
 
   useEffect(() => {
@@ -330,6 +376,31 @@ function App() {
   const learningAnalytics = useMemo(() => buildLearningAnalytics(state), [state]);
   const recommendationList = useMemo(() => buildRecommendations(state), [state]);
   const topGoalInsight = goalInsights[0];
+  const searchResults = useMemo(
+    () =>
+      searchKnowledgeBase(state, searchQuery, {
+        goalId: searchGoalId || undefined,
+      }).slice(0, 12),
+    [state, searchQuery, searchGoalId],
+  );
+  const searchDocumentCount = useMemo(() => buildSearchDocuments(state).length, [state]);
+  const learningTimeline = useMemo(() => buildLearningTimeline(state), [state]);
+  const selectedLearningPath = useMemo(
+    () =>
+      state.learningPaths
+        .filter((path) => path.goalId === pathGoalId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? state.learningPaths[0],
+    [state.learningPaths, pathGoalId],
+  );
+  const selectedLearningPathSteps = useMemo(
+    () =>
+      selectedLearningPath
+        ? state.learningPathSteps
+            .filter((step) => step.pathId === selectedLearningPath.id)
+            .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+        : [],
+    [selectedLearningPath, state.learningPathSteps],
+  );
 
   function showNotice(message: string) {
     setNotice(message);
@@ -458,6 +529,185 @@ function App() {
     setSelectedNoteId(nextNotes[0]?.id ?? "");
     setDraftNote(nextNotes[0] ?? createBlankNote(state.goals));
     showNotice("已删除该笔记及相关待办、复习提醒。");
+  }
+
+  function importResourceAsLearningObjects() {
+    const title = resourceDraft.title.trim() || resourceDraft.fileName.trim();
+    if (!title) {
+      showNotice("请填写资料标题。");
+      return;
+    }
+
+    const contentText = resourceDraft.contentText.trim();
+    const now = todayIso();
+    const resource: Resource = {
+      id: uid("resource"),
+      title,
+      type: resourceDraft.type,
+      goalId: resourceDraft.goalId || undefined,
+      sourceName: resourceDraft.sourceName.trim() || undefined,
+      fileName: resourceDraft.fileName.trim() || undefined,
+      contentText,
+      status: contentText ? "已解析" : "待解析",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const rawChunks = contentText ? buildResourceChunks(resource) : [];
+
+    let createdNoteId = "";
+    setState((current) => {
+      const note = contentText ? buildNoteFromResource(resource, rawChunks, current.goals) : null;
+      createdNoteId = note?.id || "";
+      const knowledgePoints = note
+        ? upsertKnowledgeFromNote(note, current.knowledgePoints, current.goals)
+        : current.knowledgePoints;
+      const linkedPointIds = note
+        ? knowledgePoints
+            .filter((point) =>
+              note.coreConcepts.some(
+                (concept) => concept.toLowerCase() === point.name.toLowerCase(),
+              ),
+            )
+            .map((point) => point.id)
+        : [];
+      const chunks = rawChunks.map((chunk) => ({
+        ...chunk,
+        knowledgePointIds: linkedPointIds,
+      }));
+      const generatedQuestions = note
+        ? generateQuestionsFromResource(resource, chunks, knowledgePoints, 4).map((question) => ({
+            ...question,
+            noteId: note.id,
+          }))
+        : [];
+      const reviewReminders = note
+        ? buildReviewSchedule(note, current.reviewReminders)
+        : current.reviewReminders;
+      const importJob = {
+        id: uid("import_job"),
+        resourceId: resource.id,
+        status: contentText ? ("已完成" as const) : ("等待中" as const),
+        step: contentText ? ("生成题目" as const) : ("上传" as const),
+        createdAt: now,
+        updatedAt: now,
+      };
+      const nextState = {
+        ...current,
+        resources: [resource, ...current.resources],
+        resourceChunks: [...chunks, ...current.resourceChunks],
+        notes: note ? [note, ...current.notes] : current.notes,
+        knowledgePoints,
+        questions: [...generatedQuestions, ...current.questions],
+        reviewReminders,
+        importJobs: [importJob, ...current.importJobs],
+        studyEvents: [
+          createStudyEvent({
+            type: "imported_resource",
+            goalId: resource.goalId,
+            title: `导入资料：${resource.title}`,
+          }),
+          ...(note
+            ? [
+                createStudyEvent({
+                  type: "created_note" as const,
+                  goalId: note.associatedGoalIds[0],
+                  noteId: note.id,
+                  title: `资料生成笔记：${note.title}`,
+                }),
+              ]
+            : []),
+          ...(generatedQuestions.length
+            ? [
+                createStudyEvent({
+                  type: "created_question" as const,
+                  goalId: resource.goalId,
+                  noteId: note?.id,
+                  title: `资料生成 ${generatedQuestions.length} 道自测题：${resource.title}`,
+                }),
+              ]
+            : []),
+          ...current.studyEvents,
+        ],
+      };
+      return {
+        ...nextState,
+        searchDocuments: buildSearchDocuments(nextState),
+      };
+    });
+
+    if (createdNoteId) {
+      setSelectedNoteId(createdNoteId);
+    }
+    setResourceDraft({
+      ...resourceDraft,
+      title: "",
+      sourceName: "",
+      fileName: "",
+      contentText: "",
+    });
+    showNotice(
+      contentText
+        ? "资料已导入，并自动生成笔记、知识点、自测题和复习计划。"
+        : "资料记录已创建，等待后续补充正文或解析。",
+    );
+  }
+
+  async function importResourceFile(file: File | null) {
+    if (!file) return;
+    const type = inferResourceTypeFromName(file.name);
+    setResourceDraft((current) => ({
+      ...current,
+      title: current.title || file.name.replace(/\.[^.]+$/, ""),
+      type,
+      fileName: file.name,
+      sourceName: current.sourceName || "本地文件",
+    }));
+    try {
+      if (type === "markdown" || type === "txt") {
+        const text = await file.text();
+        setResourceDraft((current) => ({
+          ...current,
+          contentText: text,
+        }));
+        showNotice("已读取文本内容，可确认导入。");
+        return;
+      }
+
+      showNotice(type === "pdf" ? "正在解析文本型 PDF..." : "正在解析 Word 正文...");
+      const result = await extractResourceFileText(file);
+      setResourceDraft((current) => ({
+        ...current,
+        contentText: result.text,
+      }));
+      showNotice(
+        result.text.trim()
+          ? "已提取正文，可确认导入。"
+          : "文件正文为空，请手动粘贴资料正文。",
+      );
+    } catch (error) {
+      showNotice(
+        error instanceof Error
+          ? error.message
+          : "文件解析失败。扫描版 PDF 需要 OCR，可先手动粘贴正文。",
+      );
+    }
+  }
+
+  function askKnowledgeBase() {
+    if (!knowledgeQuestion.trim()) {
+      showNotice("请填写要问知识库的问题。");
+      return;
+    }
+    const result = answerKnowledgeQuestion(state, knowledgeQuestion);
+    setKnowledgeAnswer(result.answer);
+  }
+
+  function refreshSearchDocuments() {
+    setState((current) => ({
+      ...current,
+      searchDocuments: buildSearchDocuments(current),
+    }));
+    showNotice("已刷新搜索文档。");
   }
 
   function updatePlanStatus(planId: string, status: PlanStatus) {
@@ -905,19 +1155,69 @@ function App() {
     showNotice("已添加自测题。");
   }
 
+  function makeRubricFromDraft(question: Question, existing?: Rubric): Rubric {
+    const defaultRubric = existing ?? buildDefaultRubric(question);
+    const draft = rubricDrafts[question.id];
+    return {
+      ...defaultRubric,
+      id: existing?.id || defaultRubric.id,
+      criteria: splitList(draft?.criteriaText || defaultRubric.criteria.join("\n")),
+      totalScore: Math.max(1, Math.round(draft?.totalScore || defaultRubric.totalScore || 100)),
+    };
+  }
+
+  function ensureRubricDraft(question: Question) {
+    const existing = state.rubrics.find((rubric) => rubric.questionId === question.id);
+    const rubric = existing ?? buildDefaultRubric(question);
+    setRubricDrafts((current) => ({
+      ...current,
+      [question.id]: {
+        criteriaText: rubric.criteria.join("\n"),
+        totalScore: rubric.totalScore,
+      },
+    }));
+  }
+
+  function saveQuestionRubric(question: Question) {
+    const existing = state.rubrics.find((rubric) => rubric.questionId === question.id);
+    const rubric = makeRubricFromDraft(question, existing);
+    if (rubric.criteria.length === 0) {
+      showNotice("请至少填写一条评分规则。");
+      return;
+    }
+    setState((current) => {
+      const currentExisting = current.rubrics.find((item) => item.questionId === question.id);
+      const nextRubric = { ...rubric, id: currentExisting?.id || rubric.id };
+      return {
+        ...current,
+        rubrics: currentExisting
+          ? current.rubrics.map((item) => (item.id === currentExisting.id ? nextRubric : item))
+          : [nextRubric, ...current.rubrics],
+      };
+    });
+    showNotice("已保存评分规则。");
+  }
+
   function deleteQuestion(questionId: string) {
     setState((current) => ({
       ...current,
       questions: current.questions.filter((question) => question.id !== questionId),
       answerAttempts: current.answerAttempts.filter((attempt) => attempt.questionId !== questionId),
       mistakes: current.mistakes.filter((mistake) => mistake.questionId !== questionId),
+      rubrics: current.rubrics.filter((rubric) => rubric.questionId !== questionId),
+      aiGradingResults: current.aiGradingResults.filter(
+        (result) => result.questionId !== questionId,
+      ),
     }));
   }
 
   function submitQuestionAttempt(question: Question) {
     const draft = answerDrafts[question.id] ?? { answerText: "", score: 60 };
-    const score = Math.min(100, Math.max(0, Math.round(Number(draft.score) || 0)));
-    const feedback = buildAttemptFeedback(question, score, draft.answerText);
+    const existingRubric = state.rubrics.find((rubric) => rubric.questionId === question.id);
+    const rubric = makeRubricFromDraft(question, existingRubric);
+    const grading = gradeAnswerWithRubric(question, rubric, draft.answerText);
+    const score = grading.score;
+    const feedback = `${grading.misconception} ${grading.nextAction}`;
     const attempt: AnswerAttempt = {
       id: uid("attempt"),
       questionId: question.id,
@@ -926,8 +1226,25 @@ function App() {
       feedback,
       createdAt: todayIso(),
     };
+    const gradingResult: AiGradingResult = {
+      id: uid("grading"),
+      attemptId: attempt.id,
+      questionId: question.id,
+      score,
+      strengths: grading.strengths,
+      missingPoints: grading.missingPoints,
+      misconception: grading.misconception,
+      nextAction: grading.nextAction,
+      createdAt: attempt.createdAt,
+    };
 
     setState((current) => {
+      const currentRubric = current.rubrics.find((item) => item.questionId === question.id);
+      const rubrics = currentRubric
+        ? current.rubrics.map((item) =>
+            item.id === currentRubric.id ? { ...rubric, id: currentRubric.id } : item,
+          )
+        : [{ ...rubric, id: rubric.id }, ...current.rubrics];
       const mistakeResult = upsertMistakeFromAttempt(current.mistakes, question, attempt);
       const knowledgePoints = updateKnowledgeAfterQuestionAttempt(
         current.knowledgePoints,
@@ -954,6 +1271,8 @@ function App() {
 
       return {
         ...current,
+        rubrics,
+        aiGradingResults: [gradingResult, ...current.aiGradingResults],
         answerAttempts: [attempt, ...current.answerAttempts],
         mistakes: mistakeResult.mistakes,
         knowledgePoints,
@@ -984,7 +1303,7 @@ function App() {
       };
     });
     setAnswerDrafts((current) => ({ ...current, [question.id]: { answerText: "", score: 80 } }));
-    showNotice(score < 60 ? "已提交自测，低分题已进入错题本。" : "已提交自测并更新掌握度。");
+    showNotice(score < 60 ? "已自动批改，低分题已进入错题本。" : "已自动批改并更新掌握度。");
   }
 
   function markMistakeReviewed(mistake: Mistake) {
@@ -1052,6 +1371,82 @@ function App() {
       };
     });
     showNotice(status === "已接受" ? "已接受推荐，并转成今日计划。" : "已更新推荐状态。");
+  }
+
+  function generateAdaptiveLearningPath() {
+    if (!pathGoalId) {
+      showNotice("请先选择目标。");
+      return;
+    }
+    setState((current) => {
+      const result = buildAdaptiveLearningPath(current, pathGoalId, {
+        horizonDays: pathHorizonDays,
+      });
+      if (!result) return current;
+      return {
+        ...current,
+        learningPaths: [result.path, ...current.learningPaths],
+        learningPathSteps: [...result.steps, ...current.learningPathSteps],
+        studyEvents: [
+          createStudyEvent({
+            type: "generated_learning_path",
+            goalId: pathGoalId,
+            title: `生成学习路径：${result.path.title}`,
+          }),
+          ...current.studyEvents,
+        ],
+      };
+    });
+    showNotice("已根据目标、资料、复习、错题和掌握分生成学习路径。");
+    setActiveTab("learningPaths");
+  }
+
+  function updateLearningPathStepStatus(
+    stepId: string,
+    status: "未开始" | "进行中" | "完成" | "跳过",
+  ) {
+    setState((current) => ({
+      ...current,
+      learningPathSteps: current.learningPathSteps.map((step) =>
+        step.id === stepId ? { ...step, status } : step,
+      ),
+      studyEvents:
+        status === "完成"
+          ? [
+              createStudyEvent({
+                type: "completed_plan",
+                goalId: current.learningPathSteps.find((step) => step.id === stepId)?.goalId,
+                title: `完成路径步骤：${
+                  current.learningPathSteps.find((step) => step.id === stepId)?.title || "学习步骤"
+                }`,
+              }),
+              ...current.studyEvents,
+            ]
+          : current.studyEvents,
+    }));
+  }
+
+  function materializeSelectedPathToPlans() {
+    if (!selectedLearningPath || selectedLearningPathSteps.length === 0) {
+      showNotice("请先生成学习路径。");
+      return;
+    }
+    const goal = state.goals.find((item) => item.id === selectedLearningPath.goalId);
+    const plans = materializeLearningPathAsPlans(
+      selectedLearningPath,
+      selectedLearningPathSteps.filter((step) => step.status !== "完成"),
+      goal,
+    );
+    setState((current) => ({
+      ...current,
+      plans: [...plans, ...current.plans],
+      learningPaths: current.learningPaths.map((path) =>
+        path.id === selectedLearningPath.id
+          ? { ...path, status: "执行中", updatedAt: todayIso() }
+          : path,
+      ),
+    }));
+    showNotice(`已把 ${plans.length} 个路径步骤转成学习计划。`);
   }
 
   function addProject() {
@@ -1152,6 +1547,8 @@ function App() {
       <div className="stack">
         <section className="dashboard-grid">
           <MetricCard label="目标" value={state.goals.length} hint="用户自定义学习方向" />
+          <MetricCard label="资料" value={state.resources.length} hint="外部学习输入" tone="info" />
+          <MetricCard label="学习路径" value={state.learningPaths.length} hint="自动规划路线" tone="success" />
           <MetricCard label="到期复习" value={due.length} hint="今天需要处理" tone="warning" />
           <MetricCard label="平均自测分" value={`${learningAnalytics.averageTestScore || "-"}分`} hint="输出型证据" tone="info" />
           <MetricCard label="低掌握知识点" value={learningAnalytics.lowMasteryKnowledgeCount} hint="系统计算掌握分低于 40" tone="warning" />
@@ -1170,15 +1567,15 @@ function App() {
           <div className="section-heading">
             <div>
               <p className="eyebrow">目标驱动闭环</p>
-              <h2>从目标到笔记、复习、计划和复盘</h2>
+              <h2>从资料导入到检索问答、学习路径和计划</h2>
             </div>
-            <button className="primary-button" onClick={createNewNote}>
-              <Plus size={18} />
-              新建笔记
+            <button className="primary-button" onClick={() => setActiveTab("knowledgeBase")}>
+              <Upload size={18} />
+              导入资料
             </button>
           </div>
           <div className="flow-row">
-            {["定义目标", "关联笔记", "提取知识点", "生成复习", "计划推进", "目标复盘"].map(
+            {["资料导入", "自动分段", "知识入库", "检索问答", "学习路径", "自动计划"].map(
               (step, index) => (
                 <div className="flow-step" key={step}>
                   <span>{index + 1}</span>
@@ -1746,6 +2143,22 @@ function App() {
       currentQuestion && answerDrafts[currentQuestion.id]
         ? answerDrafts[currentQuestion.id]
         : { answerText: "", score: 80 };
+    const currentRubric = currentQuestion
+      ? state.rubrics.find((rubric) => rubric.questionId === currentQuestion.id) ??
+        buildDefaultRubric(currentQuestion)
+      : null;
+    const currentRubricDraft =
+      currentQuestion && rubricDrafts[currentQuestion.id]
+        ? rubricDrafts[currentQuestion.id]
+        : {
+            criteriaText: currentRubric?.criteria.join("\n") || "",
+            totalScore: currentRubric?.totalScore || 100,
+          };
+    const latestGrading =
+      currentQuestion &&
+      state.aiGradingResults
+        .filter((result) => result.questionId === currentQuestion.id)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 
     return (
       <div className="stack">
@@ -1930,35 +2343,77 @@ function App() {
                     }
                   />
                 </label>
-                <label>
-                  自评分
-                  <div className="range-row">
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={currentAnswerDraft.score}
-                      onChange={(event) =>
-                        setAnswerDrafts((current) => ({
-                          ...current,
-                          [currentQuestion.id]: {
-                            ...currentAnswerDraft,
-                            score: Number(event.target.value),
-                          },
-                        }))
-                      }
-                    />
-                    <b>{currentAnswerDraft.score}</b>
-                  </div>
-                </label>
                 <details className="answer-reference">
                   <summary>查看参考答案</summary>
                   <p>{currentQuestion.answer || "暂无参考答案。"}</p>
                 </details>
+                <details className="answer-reference rubric-editor" open>
+                  <summary>评分规则</summary>
+                  <div className="rubric-tools">
+                    <label>
+                      总分
+                      <input
+                        type="number"
+                        min={1}
+                        value={currentRubricDraft.totalScore}
+                        onChange={(event) =>
+                          setRubricDrafts((current) => ({
+                            ...current,
+                            [currentQuestion.id]: {
+                              ...currentRubricDraft,
+                              totalScore: Number(event.target.value) || 100,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <div className="button-row">
+                      <button className="ghost-button" onClick={() => ensureRubricDraft(currentQuestion)}>
+                        生成默认规则
+                      </button>
+                      <button className="primary-button" onClick={() => saveQuestionRubric(currentQuestion)}>
+                        保存规则
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    value={currentRubricDraft.criteriaText}
+                    onChange={(event) =>
+                      setRubricDrafts((current) => ({
+                        ...current,
+                        [currentQuestion.id]: {
+                          ...currentRubricDraft,
+                          criteriaText: event.target.value,
+                        },
+                      }))
+                    }
+                  />
+                </details>
                 <button className="primary-button" onClick={() => submitQuestionAttempt(currentQuestion)}>
                   <CheckCircle2 size={18} />
-                  提交并更新掌握度
+                  自动批改并更新掌握度
                 </button>
+                {latestGrading && (
+                  <div className="grading-result-card">
+                    <div className="card-title-row">
+                      <div>
+                        <strong>最近批改结果</strong>
+                        <span>{latestGrading.createdAt}</span>
+                      </div>
+                      <Badge tone={latestGrading.score < 60 ? "danger" : latestGrading.score >= 85 ? "success" : "info"}>
+                        {latestGrading.score} 分
+                      </Badge>
+                    </div>
+                    <dl>
+                      <dt>扣分原因</dt>
+                      <dd>{latestGrading.misconception}</dd>
+                      <dt>遗漏知识点</dt>
+                      <dd>{latestGrading.missingPoints.join("；") || "无明显遗漏"}</dd>
+                      <dt>改进建议</dt>
+                      <dd>{latestGrading.nextAction}</dd>
+                    </dl>
+                  </div>
+                )}
                 <div className="timeline">
                   {state.answerAttempts
                     .filter((attempt) => attempt.questionId === currentQuestion.id)
@@ -2835,6 +3290,43 @@ function App() {
     switch (activeTab) {
       case "dashboard":
         return renderDashboard();
+      case "knowledgeBase":
+        return (
+          <KnowledgeBasePage
+            state={state}
+            resourceDraft={resourceDraft}
+            setResourceDraft={setResourceDraft}
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
+            searchGoalId={searchGoalId}
+            setSearchGoalId={setSearchGoalId}
+            knowledgeQuestion={knowledgeQuestion}
+            setKnowledgeQuestion={setKnowledgeQuestion}
+            knowledgeAnswer={knowledgeAnswer}
+            searchResults={searchResults}
+            searchDocumentCount={searchDocumentCount}
+            onImportResource={importResourceAsLearningObjects}
+            onImportResourceFile={importResourceFile}
+            onAskKnowledgeBase={askKnowledgeBase}
+            onRefreshSearchDocuments={refreshSearchDocuments}
+          />
+        );
+      case "learningPaths":
+        return (
+          <LearningPathsPage
+            state={state}
+            pathGoalId={pathGoalId}
+            setPathGoalId={setPathGoalId}
+            pathHorizonDays={pathHorizonDays}
+            setPathHorizonDays={setPathHorizonDays}
+            selectedLearningPath={selectedLearningPath}
+            selectedLearningPathSteps={selectedLearningPathSteps}
+            learningTimeline={learningTimeline}
+            onGeneratePath={generateAdaptiveLearningPath}
+            onMaterializePath={materializeSelectedPathToPlans}
+            onUpdateStepStatus={updateLearningPathStepStatus}
+          />
+        );
       case "notes":
         return renderNotes();
       case "knowledge":
@@ -2892,7 +3384,7 @@ function App() {
           <span>学</span>
           <div>
             <strong>个人学习系统</strong>
-            <small>智能训练 v3</small>
+            <small>知识中枢 v4</small>
           </div>
         </div>
         <nav>
