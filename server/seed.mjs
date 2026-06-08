@@ -1,8 +1,9 @@
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
 const addDaysIso = (baseIso, days) => {
-  const date = new Date(`${baseIso}T00:00:00`);
-  date.setDate(date.getDate() + days);
+  const [year, month, day] = baseIso.split("-").map(Number);
+  const date = new Date(Date.UTC(year, (month || 1) - 1, day || 1));
+  date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 };
 

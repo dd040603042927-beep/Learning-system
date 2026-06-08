@@ -178,8 +178,9 @@ export function todayIso() {
 }
 
 export function addDaysIso(baseIso: string, days: number) {
-  const date = new Date(`${baseIso}T00:00:00`);
-  date.setDate(date.getDate() + days);
+  const [year, month, day] = baseIso.split("-").map(Number);
+  const date = new Date(Date.UTC(year, (month || 1) - 1, day || 1));
+  date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
 
@@ -580,6 +581,14 @@ function normalizeSearchDocument(document: Partial<SearchDocument>): SearchDocum
     title: String(document.title || "检索文档").trim(),
     content: String(document.content || "").trim(),
     keywords: Array.isArray(document.keywords) ? cleanUnique(document.keywords.map(String)) : [],
+    embedding:
+      Array.isArray(document.embedding) && document.embedding.length
+        ? normalizeVector(document.embedding)
+        : buildLocalEmbedding(
+            `${document.title || ""}\n${document.content || ""}\n${
+              Array.isArray(document.keywords) ? document.keywords.join(" ") : ""
+            }`,
+          ),
     updatedAt: document.updatedAt || todayIso(),
   };
 }
@@ -657,10 +666,14 @@ function normalizeAiGradingResult(result: Partial<AiGradingResult>): AiGradingRe
         ? clampScore(result.score)
         : 0,
     strengths: Array.isArray(result.strengths) ? result.strengths.map(String).filter(Boolean) : [],
+    deductions: Array.isArray(result.deductions)
+      ? result.deductions.map(String).filter(Boolean)
+      : [],
     missingPoints: Array.isArray(result.missingPoints)
       ? result.missingPoints.map(String).filter(Boolean)
       : [],
     misconception: String(result.misconception || "").trim(),
+    improvedAnswer: String(result.improvedAnswer || "").trim(),
     nextAction: String(result.nextAction || "").trim(),
     createdAt: result.createdAt || todayIso(),
   };
@@ -1225,18 +1238,6 @@ export interface ResourceImportInput {
   contentText: string;
 }
 
-export interface KnowledgeSearchResult {
-  document: SearchDocument;
-  score: number;
-  matchedKeywords: string[];
-  sourceLabel: string;
-}
-
-export interface KnowledgeAnswer {
-  answer: string;
-  sources: KnowledgeSearchResult[];
-}
-
 export interface LearningTimelineItem {
   id: string;
   date: string;
@@ -1246,14 +1247,6 @@ export interface LearningTimelineItem {
   sourceId?: string;
   status?: string;
   detail?: string;
-}
-
-export function inferResourceTypeFromName(fileName: string): ResourceType {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
-  if (lower.endsWith(".pdf")) return "pdf";
-  if (lower.endsWith(".docx")) return "docx";
-  return "txt";
 }
 
 export function summarizeText(text: string, maxLength = 120) {
@@ -1303,387 +1296,92 @@ export function extractKeywordsFromText(text: string, extra: string[] = [], maxC
     .slice(0, maxCount);
 }
 
-export function extractResourceConcepts(contentText: string, title = "") {
-  const headings = contentText
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter((line) => /^#{1,4}\s+/.test(line) || /^[一二三四五六七八九十\d]+[.、]\s*/.test(line))
-    .map((line) => line.replace(/^#{1,4}\s+/, "").replace(/^[一二三四五六七八九十\d]+[.、]\s*/, "").trim())
-    .filter((line) => line.length >= 2 && line.length <= 18);
-  const keywords = extractKeywordsFromText(`${title}\n${contentText}`, [], 24).filter(
-    (keyword) => keyword.length >= 2 && keyword.length <= 18,
-  );
-  return cleanUnique([...headings, ...keywords]).slice(0, 10);
-}
+const localEmbeddingDimensions = 64;
 
-export function buildResourceChunks(resource: Resource, maxChunkLength = 720): ResourceChunk[] {
-  const now = todayIso();
-  const paragraphs = resource.contentText
-    .replace(/\r\n/g, "\n")
-    .split(/\n{2,}|(?=^#{1,4}\s+)/m)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const sourceParts = paragraphs.length ? paragraphs : [resource.contentText.trim()].filter(Boolean);
-  const grouped: string[] = [];
-  let buffer = "";
+const semanticAliases: Array<[string, string[]]> = [
+  ["不能", ["无法", "不是", "不可以", "做不到"]],
+  ["原因", ["为什么", "问题", "根因"]],
+  ["两次握手", ["二次握手", "少一次握手", "两次连接确认"]],
+  ["三次握手", ["连接建立", "连接确认", "握手过程"]],
+  ["历史报文", ["历史连接请求", "旧连接请求", "过期报文", "重复报文"]],
+  ["确认", ["验证", "证明", "同步"]],
+  ["接收能力", ["收发能力", "接收确认", "客户端接收"]],
+  ["初始序列号", ["序列号同步", "ISN", "双方序列号"]],
+  ["资源浪费", ["服务端资源", "半连接队列", "无效连接"]],
+  ["最左前缀", ["列顺序", "联合索引顺序", "从最左列开始"]],
+  ["索引失效", ["无法命中索引", "不走索引", "索引不可用"]],
+  ["掌握度", ["掌握分", "熟练度", "学习证据"]],
+];
 
-  sourceParts.forEach((part) => {
-    if (!buffer) {
-      buffer = part;
-      return;
-    }
-    if (`${buffer}\n\n${part}`.length > maxChunkLength) {
-      grouped.push(buffer);
-      buffer = part;
-      return;
-    }
-    buffer = `${buffer}\n\n${part}`;
-  });
-  if (buffer) grouped.push(buffer);
-
-  return grouped.map((content, index) => {
-    const firstLine =
-      content
-        .split(/\n+/)
-        .map((line) => line.replace(/^#{1,4}\s+/, "").trim())
-        .find(Boolean) || `${resource.title} 分段 ${index + 1}`;
-    return {
-      id: uid("chunk"),
-      resourceId: resource.id,
-      goalId: resource.goalId,
-      title: firstLine.slice(0, 40),
-      content,
-      orderIndex: index,
-      summary: summarizeText(content, 120),
-      knowledgePointIds: [],
-      createdAt: now,
-    };
-  });
-}
-
-export function buildNoteFromResource(
-  resource: Resource,
-  chunks: ResourceChunk[],
-  goals: Goal[],
-): Note {
-  const goal = goals.find((item) => item.id === resource.goalId);
-  const concepts = extractResourceConcepts(resource.contentText, resource.title);
-  const today = todayIso();
-  return {
-    id: uid("note"),
-    title: resource.title,
-    type: goal?.domain.includes("考研") ? "考研" : resource.type === "web" ? "读书" : "技术",
-    direction: goal?.domain || resource.sourceName || "资料导入",
-    tracks: goal ? [goal.track] : ["shared"],
-    associatedGoalIds: goal ? [goal.id] : [],
-    mastery: "初学",
-    importance: goal?.importance && goal.importance >= 4 ? "高" : "中",
-    summary: summarizeText(chunks.map((chunk) => chunk.summary || chunk.content).join(" "), 180),
-    content: chunks.map((chunk) => `## ${chunk.title}\n${chunk.content}`).join("\n\n"),
-    coreConcepts: concepts,
-    commonQuestions: concepts.slice(0, 4).map((concept) => `用自己的话解释「${concept}」，它解决什么问题？`),
-    myUnderstanding: "",
-    relatedNoteIds: [],
-    reviewRecords: [],
-    nextAction: concepts[0] ? `围绕「${concepts[0]}」完成一次自测和费曼讲解` : "整理资料要点并完成一次自测",
-    createdAt: today,
-    updatedAt: today,
-  };
-}
-
-export function generateQuestionsFromResource(
-  resource: Resource,
-  chunks: ResourceChunk[],
-  knowledgePoints: KnowledgePoint[],
-  count = 4,
-): Question[] {
-  const concepts = extractResourceConcepts(resource.contentText, resource.title);
-  const relatedPointIds = knowledgePoints
-    .filter((point) =>
-      concepts.some((concept) => concept.toLowerCase() === point.name.toLowerCase()),
-    )
-    .map((point) => point.id);
-  const prompts = cleanUnique([
-    ...concepts.map((concept) => `为什么「${concept}」是「${resource.title}」里的关键知识点？`),
-    ...chunks.slice(0, 3).map((chunk) => `请概括「${chunk.title}」的核心内容，并举一个应用场景。`),
-    `请把「${resource.title}」讲给一个没有背景的人听。`,
-  ]);
-
-  return prompts.slice(0, Math.max(1, count)).map((prompt, index) => ({
-    id: uid("question"),
-    goalId: resource.goalId,
-    knowledgePointIds: relatedPointIds,
-    type: index % 3 === 2 ? "费曼讲解题" : "简答题",
-    question: prompt,
-    answer:
-      chunks[index % Math.max(1, chunks.length)]?.summary ||
-      summarizeText(resource.contentText, 160) ||
-      "需要结合导入资料回答关键概念、原因、例子和易错点。",
-    difficulty: Math.min(5, Math.max(2, 2 + index)) as Question["difficulty"],
-    source: "AI生成",
-    createdAt: todayIso(),
-  }));
-}
-
-function sourceTypeLabel(sourceType: SearchDocument["sourceType"]) {
-  const labels: Record<SearchDocument["sourceType"], string> = {
-    note: "笔记",
-    resource: "资料",
-    question: "题目",
-    mistake: "错题",
-    knowledge: "知识点",
-    goal: "目标",
-    milestone: "里程碑",
-    reflection: "复盘",
-  };
-  return labels[sourceType];
-}
-
-export function buildSearchDocuments(state: AppState): SearchDocument[] {
-  const normalized = normalizeState(state);
-  const documents: SearchDocument[] = [];
-  const addDocument = (document: Omit<SearchDocument, "id" | "keywords" | "updatedAt"> & {
-    id: string;
-    keywords?: string[];
-    updatedAt?: string;
-  }) => {
-    documents.push(
-      normalizeSearchDocument({
-        ...document,
-        keywords: extractKeywordsFromText(
-          `${document.title}\n${document.content}`,
-          document.keywords || [],
-        ),
-        updatedAt: document.updatedAt || todayIso(),
-      }),
-    );
-  };
-
-  normalized.notes.forEach((note) =>
-    addDocument({
-      id: `search_note_${note.id}`,
-      sourceType: "note",
-      sourceId: note.id,
-      goalId: note.associatedGoalIds[0],
-      title: note.title,
-      content: [note.summary, note.content, note.myUnderstanding, note.nextAction].filter(Boolean).join("\n"),
-      keywords: [...note.coreConcepts, ...note.commonQuestions],
-      updatedAt: note.updatedAt,
-    }),
-  );
-
-  normalized.resources.forEach((resource) =>
-    addDocument({
-      id: `search_resource_${resource.id}`,
-      sourceType: "resource",
-      sourceId: resource.id,
-      goalId: resource.goalId,
-      title: resource.title,
-      content: resource.contentText,
-      keywords: [resource.sourceName || "", resource.fileName || "", resource.type],
-      updatedAt: resource.updatedAt,
-    }),
-  );
-
-  normalized.resourceChunks.forEach((chunk) =>
-    addDocument({
-      id: `search_chunk_${chunk.id}`,
-      sourceType: "resource",
-      sourceId: chunk.resourceId,
-      goalId: chunk.goalId,
-      title: chunk.title,
-      content: [chunk.summary, chunk.content].filter(Boolean).join("\n"),
-      updatedAt: chunk.createdAt,
-    }),
-  );
-
-  normalized.knowledgePoints.forEach((point) =>
-    addDocument({
-      id: `search_knowledge_${point.id}`,
-      sourceType: "knowledge",
-      sourceId: point.id,
-      goalId: point.goalIds[0],
-      title: point.name,
-      content: [
-        point.reason,
-        `掌握分 ${point.masteryScore}`,
-        `系统掌握 ${point.systemMastery || masteryFromScore(point.masteryScore)}`,
-        point.lastTestScore !== undefined ? `最近自测 ${point.lastTestScore}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      keywords: [point.mastery, point.reviewPriority],
-      updatedAt: point.updatedAt,
-    }),
-  );
-
-  normalized.questions.forEach((question) =>
-    addDocument({
-      id: `search_question_${question.id}`,
-      sourceType: "question",
-      sourceId: question.id,
-      goalId: question.goalId,
-      title: question.question,
-      content: question.answer,
-      keywords: [question.type, question.source],
-      updatedAt: question.createdAt,
-    }),
-  );
-
-  normalized.mistakes.forEach((mistake) =>
-    addDocument({
-      id: `search_mistake_${mistake.id}`,
-      sourceType: "mistake",
-      sourceId: mistake.id,
-      goalId: mistake.goalId,
-      title: mistake.title,
-      content: mistake.reason,
-      keywords: [mistake.status, `重复${mistake.repeatedCount}次`],
-      updatedAt: mistake.updatedAt,
-    }),
-  );
-
-  normalized.goals.forEach((goal) =>
-    addDocument({
-      id: `search_goal_${goal.id}`,
-      sourceType: "goal",
-      sourceId: goal.id,
-      goalId: goal.id,
-      title: goal.title,
-      content: [goal.domain, goal.category, goal.description, goal.currentLevel || "", goal.linkedKnowledge.join("、")]
-        .filter(Boolean)
-        .join("\n"),
-      keywords: [goal.status, goalImportanceLabels[goal.importance], trackShortLabels[goal.track]],
-      updatedAt: goal.updatedAt || goal.createdAt || todayIso(),
-    }),
-  );
-
-  normalized.milestones.forEach((milestone) =>
-    addDocument({
-      id: `search_milestone_${milestone.id}`,
-      sourceType: "milestone",
-      sourceId: milestone.id,
-      goalId: milestone.goalId,
-      title: milestone.title,
-      content: [milestone.description, `截止 ${milestone.deadline}`, `进度 ${milestone.progress}%`].join("\n"),
-      keywords: [milestone.status],
-      updatedAt: milestone.updatedAt,
-    }),
-  );
-
-  normalized.reflections.forEach((reflection) =>
-    addDocument({
-      id: `search_reflection_${reflection.id}`,
-      sourceType: "reflection",
-      sourceId: reflection.id,
-      goalId: reflection.goalFocusIds?.[0],
-      title: `周总结 ${reflection.weekStart}`,
-      content: [
-        reflection.generatedSummary,
-        reflection.wins,
-        reflection.blockers,
-        reflection.masteryNotes,
-        reflection.nextWeekFocus,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      updatedAt: reflection.createdAt,
-    }),
-  );
-
-  return documents;
-}
-
-export function searchKnowledgeBase(
-  state: AppState,
-  query: string,
-  filters: { goalId?: string; sourceTypes?: SearchDocument["sourceType"][] } = {},
-): KnowledgeSearchResult[] {
-  const trimmedQuery = query.trim();
-  if (!trimmedQuery) return [];
-
-  const documents = buildSearchDocuments(state);
-  const terms = tokenizeText(trimmedQuery);
-  const queryLower = trimmedQuery.toLowerCase();
-  return documents
-    .filter((document) => (filters.goalId ? document.goalId === filters.goalId : true))
-    .filter((document) =>
-      filters.sourceTypes?.length ? filters.sourceTypes.includes(document.sourceType) : true,
-    )
-    .map((document) => {
-      const title = document.title.toLowerCase();
-      const content = document.content.toLowerCase();
-      const keywordText = document.keywords.join(" ").toLowerCase();
-      let score = 0;
-      if (title.includes(queryLower)) score += 80;
-      if (content.includes(queryLower)) score += 45;
-      const matchedKeywords = terms.filter((term) => {
-        const matched = title.includes(term) || content.includes(term) || keywordText.includes(term);
-        if (!matched) return false;
-        if (title.includes(term)) score += 16;
-        if (keywordText.includes(term)) score += 10;
-        if (content.includes(term)) score += 5;
-        return true;
-      });
-      if (document.sourceType === "mistake" || document.sourceType === "knowledge") score += 4;
-      if (filters.goalId && document.goalId === filters.goalId) score += 8;
-      return {
-        document,
-        score,
-        matchedKeywords: cleanUnique(matchedKeywords),
-        sourceLabel: sourceTypeLabel(document.sourceType),
-      };
-    })
-    .filter((result) => result.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 30);
-}
-
-function makeSnippet(content: string, query: string, maxLength = 120) {
-  const compact = content.replace(/\s+/g, " ").trim();
-  if (compact.length <= maxLength) return compact;
-  const queryTerms = tokenizeText(query);
-  const lower = compact.toLowerCase();
-  const index = queryTerms
-    .map((term) => lower.indexOf(term))
-    .filter((position) => position >= 0)
-    .sort((a, b) => a - b)[0];
-  const start = index === undefined ? 0 : Math.max(0, index - 24);
-  return `${start > 0 ? "..." : ""}${compact.slice(start, start + maxLength)}...`;
-}
-
-export function answerKnowledgeQuestion(state: AppState, question: string): KnowledgeAnswer {
-  const sources = searchKnowledgeBase(state, question).slice(0, 5);
-  if (sources.length === 0) {
-    return {
-      answer: "当前知识库没有召回到足够相关的内容。可以先导入资料、补充笔记，或换一个更具体的关键词再问。",
-      sources,
-    };
+function hashText(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
   }
+  return hash >>> 0;
+}
 
-  const sourceLines = sources
-    .slice(0, 3)
-    .map((result, index) => {
-      const snippet = makeSnippet(result.document.content, question, 90);
-      return `${index + 1}. ${result.sourceLabel}《${result.document.title}》：${snippet}`;
-    });
-  const keyTerms = cleanUnique(sources.flatMap((result) => result.matchedKeywords)).slice(0, 8);
-  return {
-    answer: [
-      `根据当前知识库，问题「${question.trim()}」主要关联 ${sources
-        .slice(0, 3)
-        .map((result) => `${result.sourceLabel}《${result.document.title}》`)
-        .join("、")}。`,
-      keyTerms.length ? `可优先围绕这些关键词复习：${keyTerms.join("、")}。` : "",
-      "建议先阅读排在最前的来源，再把结论补写成自己的解释；如果涉及错题，优先复盘错误原因。",
-      "",
-      "参考来源：",
-      ...sourceLines,
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    sources,
-  };
+function normalizeVector(vector: number[], dimensions = localEmbeddingDimensions) {
+  const normalized = Array.from({ length: dimensions }, (_, index) => {
+    const value = Number(vector[index] || 0);
+    return Number.isFinite(value) ? value : 0;
+  });
+  const magnitude = Math.sqrt(normalized.reduce((sum, value) => sum + value * value, 0));
+  if (magnitude === 0) return normalized;
+  return normalized.map((value) => Number((value / magnitude).toFixed(6)));
+}
+
+function collectSemanticTokens(text: string) {
+  const normalized = stripMarkdownSyntax(text).toLowerCase();
+  const tokens = new Set<string>(tokenizeText(normalized));
+  const chineseRuns = normalized.match(/[\u4e00-\u9fff]{2,}/g) || [];
+  chineseRuns.forEach((run) => {
+    for (let size = 2; size <= 4; size += 1) {
+      for (let index = 0; index <= run.length - size; index += 1) {
+        tokens.add(run.slice(index, index + size));
+      }
+    }
+  });
+
+  semanticAliases.forEach(([term, aliases]) => {
+    const group = [term, ...aliases].map((item) => item.toLowerCase());
+    if (group.some((item) => normalized.includes(item))) {
+      group.forEach((item) => tokens.add(item));
+    }
+  });
+
+  return cleanUnique([...tokens]).filter((token) => token.length >= 2);
+}
+
+export function buildLocalEmbedding(text: string, dimensions = localEmbeddingDimensions) {
+  const vector = Array.from({ length: dimensions }, () => 0);
+  const tokens = collectSemanticTokens(text);
+  tokens.forEach((token) => {
+    const hash = hashText(token);
+    const index = hash % dimensions;
+    const sign = hash & 1 ? 1 : -1;
+    const weight = token.length >= 4 ? 1.2 : 1;
+    vector[index] += sign * weight;
+  });
+  return normalizeVector(vector, dimensions);
+}
+
+export function cosineSimilarity(left: number[], right: number[]) {
+  const length = Math.min(left.length, right.length);
+  if (length === 0) return 0;
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = Number(left[index] || 0);
+    const rightValue = Number(right[index] || 0);
+    dot += leftValue * rightValue;
+    leftMagnitude += leftValue * leftValue;
+    rightMagnitude += rightValue * rightValue;
+  }
+  if (leftMagnitude === 0 || rightMagnitude === 0) return 0;
+  return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
 }
 
 export function buildAdaptiveLearningPath(
@@ -2071,113 +1769,6 @@ export function generateQuestionsFromNote(
   });
 }
 
-export function buildAttemptFeedback(question: Question, score: number, answerText: string) {
-  const normalizedScore = clampScore(score);
-  const answerLength = answerText.trim().length;
-  if (normalizedScore >= 85) {
-    return `掌握较稳。你已经能覆盖「${question.type}」的核心要求，可以安排下一轮间隔复习。`;
-  }
-  if (normalizedScore >= 70) {
-    return "基本正确，但建议补充关键原因、边界条件或例子，避免只背结论。";
-  }
-  if (answerLength < 20) {
-    return "回答过短，证据不足。建议补充定义、原因、例子和容易混淆点。";
-  }
-  return "本题未达标，建议回到关联笔记重学，并把错误原因写进错题本。";
-}
-
-function normalizeCriterionText(value: string) {
-  return value.replace(/^\d+[.、]\s*/, "").trim();
-}
-
-export function buildDefaultRubric(question: Question): Rubric {
-  const concepts = extractKeywordsFromText(`${question.question}\n${question.answer}`, [], 10)
-    .filter((keyword) => keyword.length >= 2 && keyword.length <= 20)
-    .slice(0, 5);
-  const criteria = cleanUnique([
-    question.answer ? "覆盖参考答案中的核心结论" : "回答题干中的核心问题",
-    ...concepts.map((concept) => `说明「${concept}」的含义或作用`),
-    "补充关键原因、边界条件或例子",
-    question.type === "费曼讲解题" ? "能用通俗语言讲清楚并举例" : "",
-  ].filter(Boolean)).slice(0, 6);
-
-  return {
-    id: uid("rubric"),
-    questionId: question.id,
-    criteria: criteria.length ? criteria : ["覆盖核心结论", "说明原因", "给出例子"],
-    totalScore: 100,
-  };
-}
-
-function criterionMatched(answerText: string, criterion: string, referenceAnswer: string) {
-  const answerTokens = new Set(tokenizeText(answerText));
-  const criterionKeywords = extractKeywordsFromText(criterion, [], 8);
-  const referenceKeywords = extractKeywordsFromText(referenceAnswer, [], 14);
-  const expectedKeywords = cleanUnique([...criterionKeywords, ...referenceKeywords]).slice(0, 12);
-  if (expectedKeywords.length === 0) return answerText.trim().length >= 20;
-  const matched = expectedKeywords.filter((keyword) => answerTokens.has(keyword.toLowerCase()));
-  return matched.length >= Math.max(1, Math.ceil(Math.min(expectedKeywords.length, 5) * 0.35));
-}
-
-export function gradeAnswerWithRubric(
-  question: Question,
-  rubric: Rubric,
-  answerText: string,
-): Omit<AiGradingResult, "id" | "attemptId" | "createdAt"> {
-  const criteria = rubric.criteria.map(normalizeCriterionText).filter(Boolean);
-  const totalScore = Math.max(1, rubric.totalScore || 100);
-  if (!answerText.trim()) {
-    return {
-      questionId: question.id,
-      score: 0,
-      strengths: [],
-      missingPoints: criteria.length ? criteria : ["未提交答案"],
-      misconception: "没有作答，无法形成掌握证据。",
-      nextAction: "先阅读参考答案和关联笔记，再用自己的话完整回答一次。",
-    };
-  }
-
-  const scoredCriteria = criteria.length ? criteria : buildDefaultRubric(question).criteria;
-  const matchedCriteria = scoredCriteria.filter((criterion) =>
-    criterionMatched(answerText, criterion, question.answer),
-  );
-  const missingPoints = scoredCriteria.filter((criterion) => !matchedCriteria.includes(criterion));
-  const lengthBonus = answerText.trim().length >= 80 ? 8 : answerText.trim().length >= 35 ? 4 : 0;
-  const referenceTokens = new Set(tokenizeText(question.answer));
-  const answerTokens = new Set(tokenizeText(answerText));
-  const referenceMatched = [...referenceTokens].filter((token) => answerTokens.has(token));
-  const coverageBonus =
-    referenceTokens.size === 0
-      ? 0
-      : Math.min(12, Math.round((referenceMatched.length / referenceTokens.size) * 12));
-  const baseScore = Math.round((matchedCriteria.length / scoredCriteria.length) * totalScore);
-  const score = clampScore((baseScore / totalScore) * 100 + lengthBonus + coverageBonus);
-  const strengths = matchedCriteria.length
-    ? matchedCriteria.slice(0, 4).map((criterion) => `已覆盖：${criterion}`)
-    : ["能看出已尝试作答，但关键得分点覆盖不足"];
-  const misconception =
-    score >= 85
-      ? "主要得分点覆盖较完整。"
-      : missingPoints[0]
-        ? `主要缺口：${missingPoints[0]}。`
-        : "答案有一定覆盖，但还需要补充原因、边界条件或例子。";
-  const nextAction =
-    score >= 85
-      ? "安排下一轮间隔复习，并尝试换一种例子讲解。"
-      : score >= 60
-        ? "补齐遗漏得分点后，再做一次费曼讲解。"
-        : "回到关联笔记重学，把遗漏点写进错题复盘，并明天再次自测。";
-
-  return {
-    questionId: question.id,
-    score,
-    strengths,
-    missingPoints,
-    misconception,
-    nextAction,
-  };
-}
-
 export function updateKnowledgeAfterQuestionAttempt(
   knowledgePoints: KnowledgePoint[],
   questions: Question[],
@@ -2537,3 +2128,30 @@ export function completionRate(plans: StudyPlan[]) {
   if (plans.length === 0) return 0;
   return Math.round((plans.filter((plan) => plan.status === "完成").length / plans.length) * 100);
 }
+
+export {
+  buildNoteFromResource,
+  buildResourceChunks,
+  extractResourceConcepts,
+  generateQuestionsFromResource,
+  inferResourceTypeFromName,
+} from "./learning/resources";
+export {
+  buildAttemptFeedback,
+  buildDefaultRubric,
+  gradeAnswerWithRubric,
+} from "./learning/grading";
+export {
+  answerKnowledgeQuestion,
+  buildSearchDocuments,
+  searchKnowledgeBase,
+  type KnowledgeAnswer,
+  type KnowledgeSearchResult,
+} from "./learning/search";
+export {
+  buildTodayLearningQueue,
+  completeTodayLearningTask,
+  postponeTodayLearningTask,
+  type TodayLearningTask,
+  type TodayLearningTaskSourceType,
+} from "./learning/todayQueue";

@@ -109,6 +109,7 @@ export interface SearchDocument {
   title: string;
   content: string;
   keywords: string[];
+  embedding: number[];
   updatedAt: string;
 }
 
@@ -150,8 +151,10 @@ export interface AiGradingResult {
   attemptId: string;
   score: number;
   strengths: string[];
+  deductions: string[];
   missingPoints: string[];
   misconception: string;
+  improvedAnswer: string;
   nextAction: string;
   createdAt: string;
 }

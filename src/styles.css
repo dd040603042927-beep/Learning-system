@@ -747,6 +747,7 @@ textarea.tall {
 }
 
 .recommendation-list,
+.today-task-list,
 .question-list,
 .milestone-list {
   display: grid;
@@ -772,6 +773,71 @@ textarea.tall {
   border-radius: 8px;
   color: #174f85;
   background: #e4f1fb;
+}
+
+.today-task-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: stretch;
+  padding: 14px;
+  border: 1px solid #dce4ea;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.today-task-rank {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  min-height: 42px;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #236b59;
+  font-weight: 900;
+}
+
+.today-task-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.today-task-main .card-title-row > div {
+  display: grid;
+  gap: 7px;
+}
+
+.today-task-main b {
+  display: grid;
+  place-items: center;
+  min-width: 46px;
+  min-height: 36px;
+  border-radius: 8px;
+  color: #174f85;
+  background: #e4f1fb;
+}
+
+.today-task-main ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: #425266;
+}
+
+.today-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #637182;
+  font-size: 13px;
+}
+
+.today-task-actions {
+  display: grid;
+  align-content: center;
+  gap: 8px;
 }
 
 .recommendation-card ul {
@@ -951,6 +1017,21 @@ textarea.tall {
 .search-result-card p {
   margin: 0;
   color: #344355;
+}
+
+.search-score-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #637182;
+  font-size: 13px;
+}
+
+.search-score-row span {
+  min-height: 26px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #eef3f6;
 }
 
 .path-step-card {
@@ -1225,9 +1306,15 @@ textarea.tall {
   .topbar,
   .section-heading,
   .review-card,
+  .today-task-card,
   .closure-panel {
     grid-template-columns: 1fr;
     align-items: stretch;
+  }
+
+  .today-task-rank {
+    width: 100%;
+    min-height: 34px;
   }
 
   .topbar,

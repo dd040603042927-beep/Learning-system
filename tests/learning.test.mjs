@@ -1,27 +1,46 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
 
 async function importLearningModule() {
   const root = resolve(".");
-  const sourcePath = join(root, "src/lib/learning.ts");
-  const source = await readFile(sourcePath, "utf8");
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.ES2022,
-      target: ts.ScriptTarget.ES2022,
-      jsx: ts.JsxEmit.ReactJSX,
-      importsNotUsedAsValues: ts.ImportsNotUsedAsValues.Remove,
-      verbatimModuleSyntax: false,
-    },
-    fileName: sourcePath,
-  }).outputText;
   const tempDir = await mkdtemp(join(tmpdir(), "learning-rules-"));
+  const compileFile = async (sourceRelativePath, outputRelativePath, rewriteImports = (value) => value) => {
+    const sourcePath = join(root, sourceRelativePath);
+    const source = await readFile(sourcePath, "utf8");
+    const compiled = ts.transpileModule(source, {
+      compilerOptions: {
+        module: ts.ModuleKind.ES2022,
+        target: ts.ScriptTarget.ES2022,
+        jsx: ts.JsxEmit.ReactJSX,
+        importsNotUsedAsValues: ts.ImportsNotUsedAsValues.Remove,
+        verbatimModuleSyntax: false,
+      },
+      fileName: sourcePath,
+    }).outputText;
+    const outputPath = join(tempDir, outputRelativePath);
+    await mkdir(dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, rewriteImports(compiled), "utf8");
+  };
+
+  await compileFile("src/lib/learning.ts", "learning.mjs", (compiled) =>
+    compiled
+      .replaceAll('from "./learning/resources"', 'from "./learning/resources.mjs"')
+      .replaceAll('from "./learning/grading"', 'from "./learning/grading.mjs"')
+      .replaceAll('from "./learning/search"', 'from "./learning/search.mjs"')
+      .replaceAll('from "./learning/todayQueue"', 'from "./learning/todayQueue.mjs"'),
+  );
+  const rewriteLearningImport = (compiled) =>
+    compiled.replaceAll('from "../learning"', 'from "../learning.mjs"');
+  await compileFile("src/lib/learning/resources.ts", "learning/resources.mjs");
+  await compileFile("src/lib/learning/grading.ts", "learning/grading.mjs");
+  await compileFile("src/lib/learning/search.ts", "learning/search.mjs", rewriteLearningImport);
+  await compileFile("src/lib/learning/todayQueue.ts", "learning/todayQueue.mjs", rewriteLearningImport);
+
   const modulePath = join(tempDir, "learning.mjs");
-  await writeFile(modulePath, compiled, "utf8");
   const module = await import(`file:///${modulePath.replace(/\\/g, "/")}`);
   return { module, cleanup: () => rm(tempDir, { recursive: true, force: true }) };
 }
@@ -364,10 +383,13 @@ test("v4 rules: resource import powers search, knowledge answers and learning pa
     const documents = module.buildSearchDocuments(nextState);
     assert.ok(documents.some((document) => document.sourceType === "resource"));
     assert.ok(documents.some((document) => document.sourceType === "note"));
+    assert.ok(documents.every((document) => Array.isArray(document.embedding)));
+    assert.ok(documents.some((document) => document.embedding.length > 0));
 
     const results = module.searchKnowledgeBase(nextState, "为什么 TCP 不能两次握手");
     assert.ok(results.length >= 1);
     assert.ok(results[0].score > 0);
+    assert.ok(results[0].keywordScore > 0 || results[0].semanticScore > 0);
     assert.ok(["resource", "note", "question", "knowledge"].includes(results[0].document.sourceType));
 
     const answer = module.answerKnowledgeQuestion(nextState, "为什么 TCP 不能两次握手？");
@@ -395,7 +417,54 @@ test("v4 rules: resource import powers search, knowledge answers and learning pa
   }
 });
 
-test("v4 grading: rubric based grading reports missing points and low score", async () => {
+test("v5 search: semantic retrieval recalls related wording and refuses unsupported answers", async () => {
+  const { module, cleanup } = await importLearningModule();
+  try {
+    const state = makeBaseState();
+    const resource = {
+      id: "resource_network_history",
+      title: "连接建立异常案例",
+      type: "markdown",
+      goalId: "goal_backend",
+      sourceName: "网络课程",
+      fileName: "network.md",
+      contentText:
+        "旧连接请求和过期报文可能让服务端误以为新连接已经建立，导致半连接队列和服务端资源被浪费。三次握手通过再次确认接收能力来降低这个风险。",
+      status: "已解析",
+      createdAt: "2026-06-08",
+      updatedAt: "2026-06-08",
+    };
+    const nextState = {
+      ...state,
+      resources: [resource],
+      resourceChunks: module.buildResourceChunks(resource, 160),
+      searchDocuments: [],
+      learningPaths: [],
+      learningPathSteps: [],
+      rubrics: [],
+      aiGradingResults: [],
+      knowledgeRelations: [],
+      reviewPolicies: [],
+      importJobs: [],
+    };
+
+    const results = module.searchKnowledgeBase(nextState, "历史报文为什么会浪费服务端资源");
+    assert.ok(results.length >= 1);
+    assert.ok(results[0].semanticScore >= 16);
+    assert.match(results[0].document.content, /旧连接请求|过期报文|半连接队列/);
+
+    const unsupported = module.answerKnowledgeQuestion(
+      { ...state, notes: [], resources: [], resourceChunks: [], questions: [], mistakes: [], knowledgePoints: [] },
+      "量子力学和 TCP 有什么关系？",
+    );
+    assert.equal(unsupported.sources.length, 0);
+    assert.match(unsupported.answer, /没有召回|先导入资料|补充笔记/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v5 grading: rubric based grading reports missing points and low score", async () => {
   const { module, cleanup } = await importLearningModule();
   try {
     const question = makeBaseState().questions[0];
@@ -407,6 +476,8 @@ test("v4 grading: rubric based grading reports missing points and low score", as
     assert.equal(weak.questionId, question.id);
     assert.ok(weak.score < 60);
     assert.ok(weak.missingPoints.length > 0);
+    assert.ok(weak.deductions.length > 0);
+    assert.match(weak.improvedAnswer, /核心答案|还需要补充/);
     assert.match(weak.nextAction, /重学|遗漏|费曼/);
 
     const strong = module.gradeAnswerWithRubric(
@@ -416,6 +487,49 @@ test("v4 grading: rubric based grading reports missing points and low score", as
     );
     assert.ok(strong.score > weak.score);
     assert.ok(strong.strengths.length > 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v5 cockpit: today queue is explainable and completion/postpone mutate source state", async () => {
+  const { module, cleanup } = await importLearningModule();
+  try {
+    const state = makeBaseState();
+    state.knowledgePoints[0].masteryScore = 28;
+    state.knowledgePoints[0].systemMastery = "初学";
+    state.knowledgePoints[0].lastTestScore = 45;
+    state.mistakes = [
+      {
+        id: "mistake_index",
+        questionId: "question_index",
+        goalId: "goal_backend",
+        noteId: "note_index",
+        knowledgePointIds: ["kp_index"],
+        title: "联合索引最左前缀",
+        reason: "只背结论",
+        repeatedCount: 2,
+        status: "待复习",
+        createdAt: "2026-06-08",
+        updatedAt: "2026-06-08",
+      },
+    ];
+
+    const queue = module.buildTodayLearningQueue(state, "2026-06-08");
+    assert.ok(queue.length >= 3);
+    assert.ok(queue.every((task) => task.reasons.length > 0));
+    assert.ok(queue.some((task) => task.sourceType === "review"));
+    assert.ok(queue.some((task) => task.sourceType === "plan"));
+    assert.ok(queue.some((task) => task.sourceType === "mistake"));
+
+    const planTask = queue.find((task) => task.sourceType === "plan");
+    const completed = module.completeTodayLearningTask(state, planTask, "2026-06-08");
+    assert.equal(completed.plans.find((plan) => plan.id === "plan_index").status, "完成");
+    assert.ok(completed.studyEvents.some((event) => event.title.includes("完成今日任务")));
+
+    const reviewTask = queue.find((task) => task.sourceType === "review");
+    const postponed = module.postponeTodayLearningTask(state, reviewTask, 1, "2026-06-08");
+    assert.equal(postponed.reviewReminders.find((reminder) => reminder.id === "review_index").dueAt, "2026-06-09");
   } finally {
     await cleanup();
   }

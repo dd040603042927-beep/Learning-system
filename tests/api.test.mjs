@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { deflateRawSync } from "node:zlib";
 
 const root = resolve(".");
 
@@ -31,6 +32,23 @@ async function api(baseUrl, path, options = {}) {
   });
   const body = await response.json().catch(() => ({}));
   return { response, body };
+}
+
+function makeLocalZipEntry(fileName, content) {
+  const name = Buffer.from(fileName, "utf8");
+  const compressed = deflateRawSync(Buffer.from(content, "utf8"));
+  const header = Buffer.alloc(30);
+  header.writeUInt32LE(0x04034b50, 0);
+  header.writeUInt16LE(20, 4);
+  header.writeUInt16LE(0, 6);
+  header.writeUInt16LE(8, 8);
+  header.writeUInt32LE(0, 10);
+  header.writeUInt32LE(0, 14);
+  header.writeUInt32LE(compressed.length, 18);
+  header.writeUInt32LE(Buffer.byteLength(content), 22);
+  header.writeUInt16LE(name.length, 26);
+  header.writeUInt16LE(0, 28);
+  return Buffer.concat([header, name, compressed]);
 }
 
 test("auth and state API: register, login, save state, read state", async (t) => {
@@ -106,6 +124,24 @@ test("auth and state API: register, login, save state, read state", async (t) =>
   assert.ok(loggedIn.body.token);
 
   const token = loggedIn.body.token;
+  const documentXml =
+    '<?xml version="1.0" encoding="UTF-8"?><w:document><w:body><w:p><w:r><w:t>API 层 DOCX 提取</w:t></w:r></w:p><w:p><w:r><w:t>第二段资料正文</w:t></w:r></w:p></w:body></w:document>';
+  const docx = makeLocalZipEntry("word/document.xml", documentXml);
+  const extracted = await api(baseUrl, "/api/resources/extract-text", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      fileName: "api-resource.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      base64: docx.toString("base64"),
+    }),
+  });
+
+  assert.equal(extracted.response.status, 200);
+  assert.equal(extracted.body.status, "extracted");
+  assert.match(extracted.body.text, /API 层 DOCX 提取/);
+  assert.match(extracted.body.text, /第二段资料正文/);
+
   const state = loggedIn.body.state;
   const customGoal = {
     id: "goal_cet6_test",

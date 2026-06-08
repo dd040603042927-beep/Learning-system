@@ -63,7 +63,7 @@ export function KnowledgeBasePage({
       <section className="dashboard-grid">
         <MetricCard label="资料" value={state.resources.length} hint="已导入学习输入" tone="info" />
         <MetricCard label="资料分段" value={state.resourceChunks.length} hint="可检索内容块" />
-        <MetricCard label="检索文档" value={searchDocumentCount} hint="笔记 / 题目 / 资料 / 错题" tone="success" />
+        <MetricCard label="向量文档" value={searchDocumentCount} hint="笔记 / 题目 / 资料 / 错题" tone="success" />
         <MetricCard
           label="待解析"
           value={state.resources.filter((resource) => resource.status !== "已解析").length}
@@ -155,7 +155,7 @@ export function KnowledgeBasePage({
           <div className="section-heading">
             <div>
               <p className="eyebrow">搜索中心</p>
-              <h2>全文检索与规则召回</h2>
+              <h2>关键词 + 语义混合检索</h2>
             </div>
             <button className="ghost-button" onClick={onRefreshSearchDocuments}>
               <Search size={16} />
@@ -191,7 +191,7 @@ export function KnowledgeBasePage({
             </button>
           </div>
           <div className="ai-output compact-output">
-            <pre>{knowledgeAnswer || "规则召回会优先从笔记、资料、错题、自测题和知识点中匹配来源。"}</pre>
+            <pre>{knowledgeAnswer || "混合检索会优先从笔记、资料、错题、自测题和知识点中匹配来源；没有来源时不会生成肯定答案。"}</pre>
           </div>
         </div>
       </section>
@@ -216,6 +216,10 @@ export function KnowledgeBasePage({
                     </span>
                   </div>
                   <Badge tone="info">{result.score}</Badge>
+                </div>
+                <div className="search-score-row">
+                  <span>关键词 {result.keywordScore}</span>
+                  <span>语义 {result.semanticScore}</span>
                 </div>
                 <p>{result.document.content.slice(0, 180) || "暂无正文"}</p>
               </div>

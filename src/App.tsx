@@ -61,8 +61,10 @@ import {
   buildResourceChunks,
   buildReviewSchedule,
   buildSearchDocuments,
+  buildTodayLearningQueue,
   buildWeeklySummary,
   cleanUnique,
+  completeTodayLearningTask,
   completionRate,
   createStudyEvent,
   dueReminders,
@@ -80,6 +82,7 @@ import {
   nextIntervalByScore,
   normalizeState,
   planFromNoteAction,
+  postponeTodayLearningTask,
   reviewEvidenceDelta,
   searchKnowledgeBase,
   splitList,
@@ -91,6 +94,7 @@ import {
   upsertMistakeFromAttempt,
   upcomingReminders,
   upsertKnowledgeFromNote,
+  type TodayLearningTask,
 } from "./lib/learning";
 import { exportState, loadState, resetState, saveState } from "./lib/storage";
 import {
@@ -106,6 +110,7 @@ import {
 } from "./lib/api";
 import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
 import { LearningPathsPage } from "./pages/LearningPathsPage";
+import { ReviewsPage } from "./pages/ReviewsPage";
 
 type TabKey =
   | "dashboard"
@@ -375,6 +380,7 @@ function App() {
   const goalInsights = useMemo(() => buildGoalInsights(state), [state]);
   const learningAnalytics = useMemo(() => buildLearningAnalytics(state), [state]);
   const recommendationList = useMemo(() => buildRecommendations(state), [state]);
+  const todayQueue = useMemo(() => buildTodayLearningQueue(state), [state]);
   const topGoalInsight = goalInsights[0];
   const searchResults = useMemo(
     () =>
@@ -1217,7 +1223,9 @@ function App() {
     const rubric = makeRubricFromDraft(question, existingRubric);
     const grading = gradeAnswerWithRubric(question, rubric, draft.answerText);
     const score = grading.score;
-    const feedback = `${grading.misconception} ${grading.nextAction}`;
+    const feedback = [grading.misconception, grading.deductions[0], grading.nextAction]
+      .filter(Boolean)
+      .join(" ");
     const attempt: AnswerAttempt = {
       id: uid("attempt"),
       questionId: question.id,
@@ -1232,8 +1240,10 @@ function App() {
       questionId: question.id,
       score,
       strengths: grading.strengths,
+      deductions: grading.deductions,
       missingPoints: grading.missingPoints,
       misconception: grading.misconception,
+      improvedAnswer: grading.improvedAnswer,
       nextAction: grading.nextAction,
       createdAt: attempt.createdAt,
     };
@@ -1371,6 +1381,31 @@ function App() {
       };
     });
     showNotice(status === "已接受" ? "已接受推荐，并转成今日计划。" : "已更新推荐状态。");
+  }
+
+  function startTodayTask(task: TodayLearningTask) {
+    if (task.sourceType === "review" || task.sourceType === "mistake" || task.sourceType === "knowledge") {
+      setActiveTab("reviews");
+      if (task.noteId) setSelectedNoteId(task.noteId);
+      return;
+    }
+    if (task.sourceType === "plan" || task.sourceType === "milestone") {
+      setActiveTab(task.sourceType === "milestone" ? "goals" : "plans");
+      return;
+    }
+    if (task.sourceType === "pathStep") {
+      setActiveTab("learningPaths");
+    }
+  }
+
+  function completeTodayTask(task: TodayLearningTask) {
+    setState((current) => completeTodayLearningTask(current, task));
+    showNotice("已完成今日任务，并写入学习时间线。");
+  }
+
+  function postponeTodayTask(task: TodayLearningTask) {
+    setState((current) => postponeTodayLearningTask(current, task, 1));
+    showNotice("已推迟到明天。");
   }
 
   function generateAdaptiveLearningPath() {
@@ -1582,6 +1617,33 @@ function App() {
                   <strong>{step}</strong>
                 </div>
               ),
+            )}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">每日学习驾驶舱</p>
+              <h2>今天该学什么</h2>
+            </div>
+            <Badge tone={todayQueue.length ? "info" : "success"}>
+              {todayQueue.length ? `${todayQueue.length} 个推荐动作` : "今日已清空"}
+            </Badge>
+          </div>
+          <div className="today-task-list">
+            {todayQueue.slice(0, 6).map((task, index) => (
+              <TodayTaskCard
+                key={task.id}
+                task={task}
+                rank={index + 1}
+                onStart={startTodayTask}
+                onComplete={completeTodayTask}
+                onPostpone={postponeTodayTask}
+              />
+            ))}
+            {todayQueue.length === 0 && (
+              <EmptyState text="今天没有待处理任务。可以主动生成学习路径，或从训练中心做一次输出型自测。" />
             )}
           </div>
         </section>
@@ -2133,365 +2195,6 @@ function App() {
             </div>
           ))}
         </section>
-      </div>
-    );
-  }
-
-  function renderReviews() {
-    const currentQuestion = selectedQuestion ?? state.questions[0];
-    const currentAnswerDraft =
-      currentQuestion && answerDrafts[currentQuestion.id]
-        ? answerDrafts[currentQuestion.id]
-        : { answerText: "", score: 80 };
-    const currentRubric = currentQuestion
-      ? state.rubrics.find((rubric) => rubric.questionId === currentQuestion.id) ??
-        buildDefaultRubric(currentQuestion)
-      : null;
-    const currentRubricDraft =
-      currentQuestion && rubricDrafts[currentQuestion.id]
-        ? rubricDrafts[currentQuestion.id]
-        : {
-            criteriaText: currentRubric?.criteria.join("\n") || "",
-            totalScore: currentRubric?.totalScore || 100,
-          };
-    const latestGrading =
-      currentQuestion &&
-      state.aiGradingResults
-        .filter((result) => result.questionId === currentQuestion.id)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-
-    return (
-      <div className="stack">
-        <section className="dashboard-grid">
-          <MetricCard label="题库" value={state.questions.length} hint="自测与训练题" tone="info" />
-          <MetricCard label="答题记录" value={state.answerAttempts.length} hint="输出证据" tone="success" />
-          <MetricCard
-            label="待复盘错题"
-            value={state.mistakes.filter((mistake) => mistake.status === "待复习").length}
-            hint="影响掌握分"
-            tone="warning"
-          />
-          <MetricCard label="到期复习" value={due.length} hint="间隔重复" tone="warning" />
-        </section>
-
-        <section className="two-column training-grid">
-          <div className="panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">复习</p>
-                <h2>今日到期</h2>
-              </div>
-            </div>
-            <div className="card-list">
-              {due.map((reminder) => (
-                <ReviewCard
-                  key={reminder.id}
-                  reminder={reminder}
-                  note={state.notes.find((note) => note.id === reminder.noteId)}
-                  goalTitle={getReminderGoalTitle(reminder)}
-                  onComplete={completeReview}
-                />
-              ))}
-              {due.length === 0 && <EmptyState text="没有到期项。" />}
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">生成题目</p>
-                <h2>从笔记进入自测</h2>
-              </div>
-              <button className="primary-button" onClick={generateQuestionsForSelectedNote}>
-                生成 5 题
-              </button>
-            </div>
-            <div className="form-grid compact-form">
-              <label>
-                关联笔记
-                <select
-                  value={questionDraft.noteId}
-                  onChange={(event) => {
-                    const note = state.notes.find((item) => item.id === event.target.value);
-                    setQuestionDraft({
-                      ...questionDraft,
-                      noteId: event.target.value,
-                      goalId: note?.associatedGoalIds[0] ?? questionDraft.goalId,
-                    });
-                    setSelectedNoteId(event.target.value);
-                  }}
-                >
-                  {state.notes.map((note) => (
-                    <option key={note.id} value={note.id}>
-                      {note.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                类型
-                <select
-                  value={questionDraft.type}
-                  onChange={(event) =>
-                    setQuestionDraft({ ...questionDraft, type: event.target.value as Question["type"] })
-                  }
-                >
-                  {questionTypes.map((type) => (
-                    <option key={type}>{type}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="wide-field">
-                手动题干
-                <textarea
-                  value={questionDraft.question}
-                  onChange={(event) =>
-                    setQuestionDraft({ ...questionDraft, question: event.target.value })
-                  }
-                />
-              </label>
-              <label className="wide-field">
-                参考答案
-                <textarea
-                  value={questionDraft.answer}
-                  onChange={(event) =>
-                    setQuestionDraft({ ...questionDraft, answer: event.target.value })
-                  }
-                />
-              </label>
-            </div>
-            <button className="ghost-button" onClick={addManualQuestion}>
-              <Plus size={16} />
-              添加手动题
-            </button>
-          </div>
-        </section>
-
-        <section className="two-column training-grid">
-          <div className="panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">自测中心</p>
-                <h2>题目训练</h2>
-              </div>
-            </div>
-            <div className="question-list">
-              {state.questions.map((question) => {
-                const goal = state.goals.find((item) => item.id === question.goalId);
-                const note = state.notes.find((item) => item.id === question.noteId);
-                const attempts = state.answerAttempts.filter(
-                  (attempt) => attempt.questionId === question.id,
-                );
-                return (
-                  <button
-                    className={`question-item ${currentQuestion?.id === question.id ? "active" : ""}`}
-                    key={question.id}
-                    onClick={() => setSelectedQuestionId(question.id)}
-                  >
-                    <strong>{question.question}</strong>
-                    <span>
-                      {question.type} · 难度 {question.difficulty} ·{" "}
-                      {goal?.title || note?.title || "未关联"}
-                    </span>
-                    <small>
-                      {attempts.length > 0
-                        ? `最近得分 ${attempts.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0].score}`
-                        : "尚未作答"}
-                    </small>
-                  </button>
-                );
-              })}
-              {state.questions.length === 0 && <EmptyState text="还没有题目，可先从笔记生成 5 道自测题。" />}
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">答题</p>
-                <h2>{currentQuestion ? "提交一次自测" : "暂无题目"}</h2>
-              </div>
-              {currentQuestion && (
-                <button className="ghost-button danger" onClick={() => deleteQuestion(currentQuestion.id)}>
-                  <Trash2 size={15} />
-                  删除题目
-                </button>
-              )}
-            </div>
-            {currentQuestion ? (
-              <div className="answer-panel">
-                <div className="question-stem">
-                  <Badge tone="info">{currentQuestion.type}</Badge>
-                  <strong>{currentQuestion.question}</strong>
-                  <span>
-                    难度 {currentQuestion.difficulty} · 来源 {currentQuestion.source}
-                  </span>
-                </div>
-                <label>
-                  我的答案
-                  <textarea
-                    className="tall"
-                    value={currentAnswerDraft.answerText}
-                    onChange={(event) =>
-                      setAnswerDrafts((current) => ({
-                        ...current,
-                        [currentQuestion.id]: {
-                          ...currentAnswerDraft,
-                          answerText: event.target.value,
-                        },
-                      }))
-                    }
-                  />
-                </label>
-                <details className="answer-reference">
-                  <summary>查看参考答案</summary>
-                  <p>{currentQuestion.answer || "暂无参考答案。"}</p>
-                </details>
-                <details className="answer-reference rubric-editor" open>
-                  <summary>评分规则</summary>
-                  <div className="rubric-tools">
-                    <label>
-                      总分
-                      <input
-                        type="number"
-                        min={1}
-                        value={currentRubricDraft.totalScore}
-                        onChange={(event) =>
-                          setRubricDrafts((current) => ({
-                            ...current,
-                            [currentQuestion.id]: {
-                              ...currentRubricDraft,
-                              totalScore: Number(event.target.value) || 100,
-                            },
-                          }))
-                        }
-                      />
-                    </label>
-                    <div className="button-row">
-                      <button className="ghost-button" onClick={() => ensureRubricDraft(currentQuestion)}>
-                        生成默认规则
-                      </button>
-                      <button className="primary-button" onClick={() => saveQuestionRubric(currentQuestion)}>
-                        保存规则
-                      </button>
-                    </div>
-                  </div>
-                  <textarea
-                    value={currentRubricDraft.criteriaText}
-                    onChange={(event) =>
-                      setRubricDrafts((current) => ({
-                        ...current,
-                        [currentQuestion.id]: {
-                          ...currentRubricDraft,
-                          criteriaText: event.target.value,
-                        },
-                      }))
-                    }
-                  />
-                </details>
-                <button className="primary-button" onClick={() => submitQuestionAttempt(currentQuestion)}>
-                  <CheckCircle2 size={18} />
-                  自动批改并更新掌握度
-                </button>
-                {latestGrading && (
-                  <div className="grading-result-card">
-                    <div className="card-title-row">
-                      <div>
-                        <strong>最近批改结果</strong>
-                        <span>{latestGrading.createdAt}</span>
-                      </div>
-                      <Badge tone={latestGrading.score < 60 ? "danger" : latestGrading.score >= 85 ? "success" : "info"}>
-                        {latestGrading.score} 分
-                      </Badge>
-                    </div>
-                    <dl>
-                      <dt>扣分原因</dt>
-                      <dd>{latestGrading.misconception}</dd>
-                      <dt>遗漏知识点</dt>
-                      <dd>{latestGrading.missingPoints.join("；") || "无明显遗漏"}</dd>
-                      <dt>改进建议</dt>
-                      <dd>{latestGrading.nextAction}</dd>
-                    </dl>
-                  </div>
-                )}
-                <div className="timeline">
-                  {state.answerAttempts
-                    .filter((attempt) => attempt.questionId === currentQuestion.id)
-                    .slice(0, 3)
-                    .map((attempt) => (
-                      <div className="timeline-item" key={attempt.id}>
-                        <span>{attempt.createdAt}</span>
-                        <strong>{attempt.score} 分</strong>
-                        <small>{attempt.feedback}</small>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            ) : (
-              <EmptyState text="请选择一道题。" />
-            )}
-          </div>
-        </section>
-
-        <section className="two-column training-grid">
-          <div className="panel">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">错题本</p>
-              <h2>低分题进入复盘</h2>
-            </div>
-          </div>
-          <div className="card-list">
-            {state.mistakes.map((mistake) => {
-              const question = state.questions.find((item) => item.id === mistake.questionId);
-              const goal = state.goals.find((item) => item.id === mistake.goalId);
-              return (
-                <div className="task-card mistake-card" key={mistake.id}>
-                  <div className="card-title-row">
-                    <Badge tone={mistake.status === "待复习" ? "danger" : "success"}>
-                      {mistake.status}
-                    </Badge>
-                    <span>重复 {mistake.repeatedCount} 次</span>
-                  </div>
-                  <strong>{mistake.title}</strong>
-                  <span>{goal?.title || "未关联目标"}</span>
-                  <small>{mistake.reason || question?.answer || "需要补充错误原因。"}</small>
-                  <div className="card-actions">
-                    <button className="ghost-button" onClick={() => markMistakeReviewed(mistake)}>
-                      标记已复盘
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            {state.mistakes.length === 0 && <EmptyState text="没有错题。低分自测会自动进入这里。" />}
-          </div>
-        </div>
-
-        <div className="panel">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">间隔重复</p>
-              <h2>未来提醒</h2>
-            </div>
-          </div>
-          <div className="timeline">
-            {upcoming.slice(0, 12).map((reminder) => {
-              const note = state.notes.find((item) => item.id === reminder.noteId);
-              return (
-                <div className="timeline-item" key={reminder.id}>
-                  <span>{reminder.dueAt}</span>
-                  <strong>{note?.title ?? "已删除笔记"}</strong>
-                  <small>
-                    第 {reminder.intervalDays} 天 · {reminder.conceptName || "整篇笔记"} ·{" "}
-                    {getReminderGoalTitle(reminder) || "未关联目标"}
-                  </small>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
       </div>
     );
   }
@@ -3334,7 +3037,33 @@ function App() {
       case "plans":
         return renderPlans();
       case "reviews":
-        return renderReviews();
+        return (
+          <ReviewsPage
+            state={state}
+            due={due}
+            upcoming={upcoming}
+            questionTypes={questionTypes}
+            questionDraft={questionDraft}
+            setQuestionDraft={setQuestionDraft}
+            selectedQuestion={selectedQuestion}
+            selectedQuestionId={selectedQuestionId}
+            setSelectedQuestionId={setSelectedQuestionId}
+            setSelectedNoteId={setSelectedNoteId}
+            answerDrafts={answerDrafts}
+            setAnswerDrafts={setAnswerDrafts}
+            rubricDrafts={rubricDrafts}
+            setRubricDrafts={setRubricDrafts}
+            onGenerateQuestionsForSelectedNote={generateQuestionsForSelectedNote}
+            onAddManualQuestion={addManualQuestion}
+            onDeleteQuestion={deleteQuestion}
+            onEnsureRubricDraft={ensureRubricDraft}
+            onSaveQuestionRubric={saveQuestionRubric}
+            onSubmitQuestionAttempt={submitQuestionAttempt}
+            onMarkMistakeReviewed={markMistakeReviewed}
+            onCompleteReview={completeReview}
+            getReminderGoalTitle={getReminderGoalTitle}
+          />
+        );
       case "reflections":
         return renderReflections();
       case "goals":
@@ -3384,7 +3113,7 @@ function App() {
           <span>学</span>
           <div>
             <strong>个人学习系统</strong>
-            <small>知识中枢 v4</small>
+            <small>智能训练知识库 v5</small>
           </div>
         </div>
         <nav>
@@ -3516,6 +3245,57 @@ function RecommendationCard({
         </button>
         <button className="ghost-button danger" onClick={() => onStatusChange(recommendation, "忽略")}>
           忽略
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TodayTaskCard({
+  task,
+  rank,
+  onStart,
+  onComplete,
+  onPostpone,
+}: {
+  task: TodayLearningTask;
+  rank: number;
+  onStart: (task: TodayLearningTask) => void;
+  onComplete: (task: TodayLearningTask) => void;
+  onPostpone: (task: TodayLearningTask) => void;
+}) {
+  return (
+    <div className="today-task-card">
+      <div className="today-task-rank">{rank}</div>
+      <div className="today-task-main">
+        <div className="card-title-row">
+          <div>
+            <Badge tone={task.priorityScore >= 110 ? "danger" : task.priorityScore >= 90 ? "warning" : "info"}>
+              {task.actionType}
+            </Badge>
+            <strong>{task.title}</strong>
+          </div>
+          <b>{task.priorityScore}</b>
+        </div>
+        <ul>
+          {task.reasons.slice(0, 3).map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+        <div className="today-task-meta">
+          <span>{task.dueDate}</span>
+          <span>{task.estimatedMinutes} 分钟</span>
+        </div>
+      </div>
+      <div className="today-task-actions">
+        <button className="ghost-button" onClick={() => onStart(task)}>
+          开始
+        </button>
+        <button className="primary-button" onClick={() => onComplete(task)}>
+          完成
+        </button>
+        <button className="ghost-button" onClick={() => onPostpone(task)}>
+          推迟
         </button>
       </div>
     </div>
